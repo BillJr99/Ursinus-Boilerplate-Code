@@ -203,10 +203,11 @@ for item in postdict['schedule']:
             
             # Date is yyyymmdd format
             yesterday = datetime.now() - timedelta(days=1) 
+            tomorrow = datetime.now() + timedelta(days=1)
             currentdate = getDateString(yesterday)
             
-            # Any deliverables due/handed out yesterday?
-            if currentdate == startd:
+            # Any deliverables due/handed out yesterday/today/tomorrow?
+            if currentdate == startd or currentdate == yesterday or currentdate == tomorrow:
                 message = message + startd + ": " + description + "\n\n"
             
 message = message.strip()
