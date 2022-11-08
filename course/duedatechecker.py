@@ -206,7 +206,7 @@ for item in postdict['schedule']:
             tomorrow = datetime.now() + timedelta(days=1)
             today = datetime.now()
             yesterdaydate = getDateString(yesterday)
-            todaydate = datetime.now()
+            currentdate = getDateString(today)
             tomorrowdate = getDateString(tomorrow)
             
             # Any deliverables due/handed out yesterday/today/tomorrow?
