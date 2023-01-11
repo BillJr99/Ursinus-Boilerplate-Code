@@ -12,7 +12,7 @@ Week,Day,Title,Link,dtitle1,dlink1,dpoints1,dtype1,dtitle2,dlink2,dpoints2,dtype
 3,2,"Software Architecture (front end, microservices, backend)",./Activities/Architecture,,,,,,,,,,,,,Re-Engineering a Reverse Engineering Portal to a Distributed SOA by William M. Mongan,https://www.cs.drexel.edu/~spiros/papers/ICPC08.pdf,,,,,,,,
 4,0,"Software Architecture (front end, microservices, backend)",,Homework Assignment: git Due,./Assignments/git,100,,,,,,,,,,On the Use of Radio Frequency Identification for Continuous Biomedical Monitoring by William M. Mongan,https://dl.acm.org/doi/pdf/10.1145/3054977.3055002?download=true,,,,,,,,
 4,1,Scrum Meetings,,,,,,,,,,,,,,,,,,,,,,,
-4,2,Software Design: Design Patterns,./Activities/DesignPatterns,Software Design: Design Report Handed Out,./Project/Design,100,written,Homework Assignment: Weekly Scrum Reflection Due,./Project/ScrumReflection,10,written,,,,,,,,,,,,,,
+4,2,Software Design: Design Patterns,./Activities/DesignPatterns,Software Design: Design Report Handed Out,./Project/Design,100,written,Homework Assignment: Weekly Scrum Reflection Due,./Project/ScrumReflection,10,written,,,,,DPE Textbook,,,,,,,,,
 5,0,Software Design: Design Patterns,,Participation: First Self-Assessment Handed Out,./Assignments/Participation/SelfAssessment,10,written,,,,,,,,,,,,,,,,,,
 5,1,Scrum Meetings,./Activities/UML,,,,,,,,,,,,,,,,,,,,,,
 5,2,UML Class Diagrams,,Homework Assignment: Weekly Scrum Reflection Due,./Project/ScrumReflection,10,written,,,,,,,,,,,,,,,,,,
