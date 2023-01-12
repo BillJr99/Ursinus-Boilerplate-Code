@@ -24,7 +24,7 @@ Week,Day,Title,Link,dtitle1,dlink1,dpoints1,dtype1,dtitle2,dlink2,dpoints2,dtype
 5,3,Data Structures,,Midterm: Midterm Exam Due,,100,written,,,,,,,,,,,,,,,,,,
 6,0,Recursion in MIPS,./Activities/MIPSRecursion,Programming Assignment: MIPS Programming Due,./Assignments/MIPSProgramming,100,,,,,,,,,,,,,,,,,,,
 6,1,Computer Arithmetic: Addition and Subtraction,./Activities/ComputerArithmeticAddSubtract,Lab: Implementing loops in MIPS Assembly Due,./Labs/MIPSIteration,100,,,,,,,,,,COD Chapter 3.1-3.2,,What is a Stack by Ben Eater,https://www.youtube.com/watch?v=xBjQVxVxOxc&list=PLowKtXNTBypFbtuVMUVXNR0z1mu7dp7eH&index=5,,,,,,
-6,2,Computer Arithmetic: Addition and Subtraction,,,,,,,,,,,,,,,,,,,,,,,
+6,2,Computer Arithmetic: Addition and Subtraction,,,,,,,,,,,,,,How Computers Add Numbers by Ben Eater,https://www.youtube.com/watch?v=wvJc9CZcvBc,,,,,,,,
 6,3,Computer Arithmetic: Addition and Subtraction Logic Gates,./Activities/ComputerArithmeticAddSubtractLogicGates,Participation: First Self-Assessment Due,./Assignments/Participation/SelfAssessment,10,written,,,,,,,,,,,,,,,,,,
 8,0,Computer Arithmetic: Multiplication and Division,./Activities/ComputerArithmeticMultiplyDivide,,,,,,,,,,,,,COD Chapter 3.3-3.4,,,,,,,,,
 8,1,Computer Arithmetic: Multiplication and Division,,,,,,,,,,,,,,RAM and Bus Timing by Ben Eater,https://www.youtube.com/watch?v=i_wrxBdXTgM&list=PLowKtXNTBypFbtuVMUVXNR0z1mu7dp7eH&index=6,,,,,,,,
