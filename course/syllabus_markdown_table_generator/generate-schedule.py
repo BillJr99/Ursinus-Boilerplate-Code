@@ -6,6 +6,7 @@ def strip(x):
     
 if len(sys.argv) < 2:
     print("Usage: <csv filename>")
+    sys.exit(-1)
     
 fname = sys.argv[1]
 
