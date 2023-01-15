@@ -33,6 +33,8 @@ for row in csvreader:
         print("        points: {}".format(row['dpoints1']))
         if len(strip(row['dtype1'])) > 0:
             print("        submission_types: \"{}\"".format(row['dtype1']))
+        if len(strip(row['drubric1'])) > 0:
+            print("        rubricpath: \"{}\"".format(row['drubric1']))
             
     if len(strip(row['dtitle2'])) > 0:
         print("      - dtitle: \"{}\"".format(row['dtitle2']))
@@ -42,7 +44,9 @@ for row in csvreader:
             print("        dlink: false")                
         print("        points: {}".format(row['dpoints2']))
         if len(strip(row['dtype2'])) > 0:
-            print("        submission_types: \"{}\"".format(row['dtype2']))    
+            print("        submission_types: \"{}\"".format(row['dtype2']))
+        if len(strip(row['drubric2'])) > 0:
+            print("        rubricpath: \"{}\"".format(row['drubric2']))            
 
     if len(strip(row['dtitle3'])) > 0:
         print("      - dtitle: \"{}\"".format(row['dtitle3']))
@@ -52,7 +56,9 @@ for row in csvreader:
             print("        dlink: false")                
         print("        points: {}".format(row['dpoints3']))
         if len(strip(row['dtype3'])) > 0:
-            print("        submission_types: \"{}\"".format(row['dtype3']))       
+            print("        submission_types: \"{}\"".format(row['dtype3'])) 
+        if len(strip(row['drubric3'])) > 0:
+            print("        rubricpath: \"{}\"".format(row['drubric3']))            
 
     if len(strip(row['rtitle1'])) > 0:
         print("    readings:")
