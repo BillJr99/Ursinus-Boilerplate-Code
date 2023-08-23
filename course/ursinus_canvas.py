@@ -809,10 +809,10 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         if 'deliverables' in item:
             for deliverable in item['deliverables']:        
                 dtitle = deliverable['dtitle']
-                if 'dlink' in deliverable:
+                if 'dlink' in deliverable and len(str(deliverable['dlink']).strip()) > 0 and str(deliverable['dlink']).strip().lower() != "false":
                     dlink = deliverable['dlink']
                 else:
-                    dlink = ""
+                    dlink = None
                     
                 if 'points' in deliverable:
                     points = int(deliverable['points'])
@@ -853,7 +853,12 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     inputdict['notify_of_update'] = True
                     inputdict['published'] = True
                     inputdict['points_possible'] = points
-                    inputdict['description'] = description + " (<a href=\"" + makelink(addslash(homepage), stripnobool(dlink)) + "\">" + makelink(addslash(homepage), stripnobool(dlink)) + "</a>)"
+                    
+                    if dlink is None:
+                        inputdict['description'] = description 
+                    else:
+                        inputdict['description'] = description + " (<a href=\"" + makelink(addslash(homepage), stripnobool(dlink)) + "\">" + makelink(addslash(homepage), stripnobool(dlink)) + "</a>)"
+                        
                     inputdict['due_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) 
                     inputdict['lock_at'] = parseDateTimeCanvas(datetime.strptime(enddate.replace('/', '') + get_local_time(enddate), DUE_DATE_FORMAT)) # lock out assignments on the last day of the class
                     inputdict['position'] = asmtidx
@@ -979,27 +984,34 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     # Create a Module Entry for the Deliverable
                     inputdict = {}
                     inputdict['title'] = dtitle
-                    inputdict['type'] = "ExternalUrl"
-                    inputdict['external_url'] = makelink(addslash(homepage), stripnobool(dlink))
-                    inputdict['new_tab'] = True            
+                    if dlink is None:
+                        inputdict['type'] = "SubHeader"
+                    else:
+                        inputdict['type'] = "ExternalUrl"
+                        inputdict['external_url'] = makelink(addslash(homepage), stripnobool(dlink))
+                        inputdict['new_tab'] = True            
                     inputdict['published'] = True
                     add_module_item(module, inputdict)  
                     
         if 'readings' in item:
             for reading in item['readings']:    
                 rtitle = reading['rtitle']
-                if 'rlink' in reading:
+                if 'rlink' in reading and len(str(reading['rlink']).strip()) > 0 and str(reading['rlink']).strip().lower() != "false":
                     rlink = reading['rlink']
                 else:
-                    rlink = ""  
+                    rlink = None  
                 
                 # Create a Module Entry for the Reading Activity
                 inputdict = {}
                 inputdict['title'] = rtitle
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = makelink(addslash(homepage), stripnobool(rlink))
-                inputdict['new_tab'] = True            
                 inputdict['published'] = True
+                if rlink is None:
+                    inputdict['type'] = "SubHeader"
+                else:
+                    inputdict['type'] = "ExternalUrl"
+                    inputdict['external_url'] = makelink(addslash(homepage), stripnobool(rlink))
+                    inputdict['new_tab'] = True            
+                
                 add_module_item(module, inputdict)                  
     
     # https://canvas.instructure.com/doc/api/late_policy.html
