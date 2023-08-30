@@ -151,6 +151,24 @@ def geticalday(d):
         return "SU"
     else:
         return ""
+        
+def geticaldayoffset(d):
+    if d == 'M':
+        return 0
+    elif d == "T":
+        return 1
+    elif d == "W":
+        return 2
+    elif d == "R":
+        return 3
+    elif d == "F":
+        return 4
+    elif d == "S":
+        return 5
+    elif d == "U":
+        return 6
+    else:
+        return 0        
     
 if len(sys.argv) <= 1:
     fname = "_pages/syllabus.md"
@@ -195,11 +213,15 @@ outf.write("BEGIN:VTIMEZONE\r\nTZID:US-Eastern\r\nLAST-MODIFIED:20070101T000000Z
 for i in range(len(postdict['info']['class_meets_locations'])):
     section = postdict['info']['course_sections'][i]['section']
     for meeting in postdict['info']['class_meets_locations'][i]['section']:
-        dtstart = getDateString(parseDate(startdate))
+        # prevent recurrence from actually starting on first day, but rather on the first recurrence day
+        offset = geticaldayoffset(meeting['day'])
+        startdateoffset = adddays(parseDate(startdate), offset)    
+    
+        dtstart = getDateString(startdateoffset)
         dtstart = dtstart + "T"
         dtstart = dtstart + getTimeString(parseTime(meeting['starttime'])) # leave in local time, timezone info given above assuming Eastern Time
         
-        dtend = getDateString(parseDate(startdate)) # assume no event overlaps a day boundary, ends on start date
+        dtend = getDateString(startdateoffset) # assume no event overlaps a day boundary, ends on start date
         dtend = dtend + "T"
         dtend = dtend + getTimeString(parseTime(meeting['endtime'])) # leave in local time, timezone info given above assuming Eastern Time
         
@@ -298,21 +320,23 @@ for item in postdict['schedule']:
             description = stripnobool(description) + "\\nDeliverable: " + stripnobool(dtitle) + " " + stripnobool(dlink) 
         
             # Write the Assignment as an all-day event
-            outf.write("BEGIN:VEVENT\r\nUID:" + stripnobool(genuid()) + "\r\nDTSTAMP:" + startd + "T000000Z" + "\r\nDTSTART;VALUE=DATE:" + startd + "\r\nSUMMARY:" + coursenum + " " + coursename + ": " + stripnobool(dtitle) + "\r\nLOCATION:\r\nDESCRIPTION:\r\nPRIORITY:3\r\nEND:VEVENT\r\n")        
-    # Write the lecture as an all-day event:
-    outf.write("BEGIN:VEVENT\r\nUID:" + stripnobool(genuid()) + "\r\nDTSTAMP:" + startd + "T000000Z" + "\r\nDTSTART;VALUE=DATE:" + startd + "\r\nSUMMARY:" + coursenum + " " + coursename + ": Class Meeting\r\nLOCATION:\r\nDESCRIPTION:" + stripnobool(description) + "\r\nPRIORITY:3\r\nEND:VEVENT\r\n")
+            outf.write("BEGIN:VEVENT\r\nUID:" + stripnobool(genuid()) + "\r\nDTSTAMP:" + startd + "T000000Z" + "\r\nDTSTART;VALUE=DATE:" + startd + "\r\nSUMMARY:" + coursenum + " " + coursename + ": " + stripnobool(dtitle) + "\r\nLOCATION:\r\nDESCRIPTION:\r\nPRIORITY:3\r\nEND:VEVENT\r\n")    
     
 # Write Office Hours as a Recurring Event - recurring events do not account for rescheduled or designated dates, which will be updated on the syllabus; designated dates will be excepted from the recurring rule
 for instructor in postdict['instructors']:
     instructorname = instructor['name']
     
     if 'officehours' in instructor:
-        for officehour in instructor['officehours']:        
-            dtstart = getDateString(parseDate(startdate))
+        for officehour in instructor['officehours']:  
+            # prevent recurrence from actually starting on first day, but rather on the first recurrence day
+            offset = geticaldayoffset(officehour['day'])
+            startdateoffset = adddays(parseDate(startdate), offset)       
+        
+            dtstart = getDateString(startdateoffset)
             dtstart = dtstart + "T"
             dtstart = dtstart + getTimeString(parseTime(officehour['starttime'])) # leave in local time, timezone info given above assuming Eastern Time
 
-            dtend = getDateString(parseDate(startdate)) # assume no event overlaps a day boundary, ends on start date
+            dtend = getDateString(startdateoffset) # assume no event overlaps a day boundary, ends on start date
             dtend = dtend + "T"
             dtend = dtend + getTimeString(parseTime(officehour['endtime'])) # leave in local time, timezone info given above assuming Eastern Time
 
