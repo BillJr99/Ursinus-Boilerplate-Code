@@ -233,12 +233,14 @@ if len(message) > 0:
           'Messages': [
             {
               "From": {
-                "Email": "wmongan@ursinus.edu",
+                # "Email": "wmongan@ursinus.edu",
+                "Email": "billmongan@gmail.com",
                 "Name": "William Mongan"
               },
               "To": [
                 {
-                "Email": "wmongan@ursinus.edu",
+                #"Email": "wmongan@ursinus.edu",
+                "Email": "billmongan@gmail.com",
                 "Name": "William Mongan"
                 }
               ],
@@ -258,10 +260,13 @@ if len(message) > 0:
         
         msg = MIMEText(message)
         msg['Subject'] = "Ursinus Deliverables Reminder"
-        msg['From'] = "wmongan@ursinus.edu"
-        msg['To'] = "wmongan@ursinus.edu"
+        #msg['From'] = "wmongan@ursinus.edu"
+        #msg['To'] = "wmongan@ursinus.edu"
+        msg['From'] = "billmongan@gmail.com"
+        msg['To'] = "billmongan@gmail.com"        
         
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:            
-            server.sendmail("wmongan@ursinus.edu", "wmongan@ursinus.edu", msg.as_string())  
+            #server.sendmail("wmongan@ursinus.edu", "wmongan@ursinus.edu", msg.as_string())  
+            server.sendmail("billmongan@gmail.com", "billmongan@gmail.com", msg.as_string())  
         
 f.close()
