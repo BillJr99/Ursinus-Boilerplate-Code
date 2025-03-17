@@ -296,6 +296,33 @@ def arrange_tabs(course):
             tab.update(hidden=True)
         if tab.label in TABS_TO_SHOW:
             tab.update(hidden=False)
+
+def omit_attendance_grade(course, ATTENDANCE_NAME="Roll Call Attendance"):
+    # Retrieve assignments
+    assignments = course.get_assignments()
+
+    # Search for the Roll Call Attendance assignment
+    attendance_assignment = None
+    for assignment in assignments:
+        if assignment.name.strip().lower() == ATTENDANCE_NAME.lower():
+            attendance_assignment = assignment
+            break  # Stop searching once found
+
+    if attendance_assignment:
+        printlog(f"Found attendance assignment: {attendance_assignment.name} (ID: {attendance_assignment.id})")
+
+        # Update the assignment to be ungraded and excluded from the final grade
+        attendance_assignment.edit(
+            assignment={
+                "submission_types": ["none"],  # No submission
+                "points_possible": 100,  # No points assigned
+                "grading_type": "points",  # Enables attendance tracking
+                "omit_from_final_grade": True  # Ensures it's excluded from the final grade
+            }
+        )
+        printlog(f"Updated assignment: {attendance_assignment.name} is now ungraded and does not count toward the final grade.")
+    else:
+        printlog("Roll Call Attendance assignment not found.")    
             
 # https://canvas.instructure.com/doc/api/discussion_topics.html
 # https://canvas.instructure.com/doc/api/discussion_topics.html#method.discussion_topics.create
@@ -1012,7 +1039,10 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     inputdict['external_url'] = makelink(addslash(homepage), stripnobool(rlink))
                     inputdict['new_tab'] = True            
                 
-                add_module_item(module, inputdict)                  
+                add_module_item(module, inputdict) 
+
+    printlog("Omitting attendance grade...")
+    omit_attendance_grade(course)                
     
     # https://canvas.instructure.com/doc/api/late_policy.html
     printlog("Writing Late Policy...")
