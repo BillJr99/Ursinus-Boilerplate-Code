@@ -803,6 +803,15 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['published'] = True
                 add_module_item(module, inputdict)
                 
+            if 'teamshelproom' in postdict['info']:
+                inputdict = {}
+                inputdict['title'] = "Access the Class Teams Help Room Channel"
+                inputdict['type'] = "ExternalUrl"
+                inputdict['external_url'] = postdict['info']['teamshelproom']
+                inputdict['new_tab'] = True
+                inputdict['published'] = True
+                add_module_item(module, inputdict)                
+                
             if 'chatlink' in postdict['info']:
                 inputdict = {}
                 inputdict['title'] = "Access the Class Group Chat"
