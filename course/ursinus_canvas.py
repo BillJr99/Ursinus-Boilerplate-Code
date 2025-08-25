@@ -44,8 +44,8 @@ child_threads = []
 
 skipdiscussions = False
 skipassignments = False
-skipofficehours = True
-skiplecturecalendar = True
+skipofficehours = False
+skiplecturecalendar = False
 
 def get_local_time(dt):
     # Convert string dates to datetime
@@ -1205,12 +1205,13 @@ def usage():
     print("\t[-d | --discussions]\tDo not delete or re-create discussion topics and entries")
     print("\t[-s | --assignments]\tDo not delete or re-create assignments (but still re-arrange existing ones in modules view)")
     print("\t[-o | --noofficehours]\tDo not delete or re-create office hours")
+    print("\t[-l | --nolecturecalendar]\tDo not upload lecture calendar")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
     
 # Parse user options
 # https://docs.python.org/3/library/getopt.html
 try:
-    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dso", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "discussions", "assignments", "noofficehours"])
+    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsol", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar"])
 except getopt.GetoptError as err:
     # print help information and exit:
     print(err)  # will print something like "option -z not recognized"
@@ -1243,12 +1244,14 @@ for o, a in opts:
         atimes = a.split("|")
         DUE_TIME_ST = atimes[0]
         DUE_TIME_DST = atimes[1]
-    elif o in ("-d", "--discussions"):
+    elif o in ("-d", "--nodiscussions"):
         skipdiscussions = True
-    elif o in ("-s", "--assignments"):
+    elif o in ("-s", "--noassignments"):
         skipassignments = True
     elif o in ("-o", "--noofficehours"):
-        skipofficehours = True        
+        skipofficehours = True   
+    elif o in ("-l", "--nolecturecalendar"):
+        skiplecturecalendar = True
 
 if USER_ID is None:
     USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
