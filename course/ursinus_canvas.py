@@ -24,7 +24,6 @@ import pytz
 # course.create_course_section - separate calendar?  duplicate assignments, etc?
 # Change course calendar entries to timetables: which can possibly be done on a per-section basis
 ## https://canvas.instructure.com/doc/api/calendar_events.html#method.calendar_events_api.set_course_timetable
-# Tie to learning outcomes
 
 API_URL = "https://ursinus.instructure.com/"
 # Generate key at API_URL + profile/settings
