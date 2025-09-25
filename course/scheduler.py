@@ -178,36 +178,39 @@ def _dump_schedule_one_day(day: dict, indent_spaces: int = 2) -> str:
     return "\n".join(out)
 
 
-def dump_front_matter_with_multiline_schedule(fm: dict) -> str:
-    """Return a YAML string with a custom-rendered schedule section (multi-line list items)."""
-    schedule = fm.get("schedule", None)
-
-    fm_copy = dict(fm)
-    if "schedule" in fm_copy:
-        del fm_copy["schedule"]
-
-    head = yaml.safe_dump(fm_copy, sort_keys=False, allow_unicode=True)
-
-    if schedule is None:
-        return head
-
-    out = [head.rstrip(), "schedule:"]
-    for day in schedule:
-        out.append(_dump_schedule_one_day(day, indent_spaces=2))
-    return "\n".join(out) + "\n"
-
-
 def write_markdown_with_front_matter(path: str, fm: dict, body: str):
-    """Write back Markdown with YAML front matter using our multi-line schedule emitter."""
+    """
+    Write Markdown with YAML front matter using our in-place schedule emitter.
+    Guarantees:
+      - No top-level keys other than 'schedule' are modified or introduced.
+      - The ordering of top-level keys, including 'schedule', is preserved.
+    """
     try:
+        # Shallow copy so we can safely remove ephemeral keys before writing
+        fm_to_write = dict(fm)
+        fm_to_write.pop("_schedule_is_internal_shape__", None)
+
+        # Optional regression guard: uncomment to catch unexpected key changes.
+        # original_keys = [k for k in fm.keys() if k != "_schedule_is_internal_shape__"]
+        # to_write_keys = list(fm_to_write.keys())
+        # if set(to_write_keys) != set(original_keys):
+        #     raise ValueError("Top-level key set changed outside of 'schedule'")
+
         with open(path, "w", encoding="utf-8") as f:
             f.write("---\n")
-            if isinstance(fm.get("schedule"), list) and fm.get("_schedule_is_internal_shape__", False):
-                f.write(dump_front_matter_with_multiline_schedule(fm))
-            elif isinstance(fm.get("schedule"), list) and all(('lectures' in d and 'readings' in d and 'deliverables' in d) for d in fm['schedule']):
-                f.write(dump_front_matter_with_multiline_schedule(fm))
+            if isinstance(fm_to_write.get("schedule"), list) and all(
+                (
+                    isinstance(d, dict)
+                    and "lectures" in d
+                    and "readings" in d
+                    and "deliverables" in d
+                )
+                for d in fm_to_write.get("schedule", [])
+            ):
+                f.write(dump_front_matter_with_multiline_schedule(fm_to_write))
             else:
-                yaml.safe_dump(fm, f, sort_keys=False, allow_unicode=True)
+                # Fallback: standard YAML emission (still preserves order with sort_keys=False).
+                yaml.safe_dump(fm_to_write, f, sort_keys=False, allow_unicode=True)
             f.write("---\n")
             f.write(body if body is not None else "")
     except Exception as e:
@@ -215,9 +218,51 @@ def write_markdown_with_front_matter(path: str, fm: dict, body: str):
         traceback.print_exc()
         raise
 
+
 # =========================================================
 # Data model helpers (schema adapter)
 # =========================================================
+
+def serialize_schedule_to_front_matter(days: List[dict], fm: dict) -> dict:
+    """
+    Write internal days back to fm['schedule'] in our internal shape.
+    IMPORTANT: Do not add or modify any top-level keys other than 'schedule'.
+    """
+    try:
+        out_sched = []
+        for d in days:
+            week = d.get("week", "")
+            slot = d.get("slot", "")
+
+            lectures = d.get("lectures", []) or []
+            if lectures:
+                lec_title = lectures[0].get("title", "")
+                lec_link = lectures[0].get("link", None)
+            else:
+                lec_title, lec_link = "", None
+
+            day_out = {
+                "week": week,
+                "slot": slot,
+                "lectures": lectures,
+                "readings": d.get("readings", []),
+                "deliverables": d.get("deliverables", []),
+            }
+            if lec_title:
+                day_out["title"] = lec_title
+            if lec_link:
+                day_out["link"] = lec_link
+
+            out_sched.append(day_out)
+
+        # Copy fm verbatim and replace ONLY the 'schedule' key.
+        new_fm = dict(fm)
+        new_fm["schedule"] = out_sched
+        return new_fm
+    except Exception as e:
+        print(f"[serialize_schedule_to_front_matter] {e}")
+        traceback.print_exc()
+        raise
 
 def normalize_schedule_from_front_matter(fm: dict) -> List[dict]:
     """
@@ -282,46 +327,34 @@ def normalize_schedule_from_front_matter(fm: dict) -> List[dict]:
         raise
 
 
-def serialize_schedule_to_front_matter(days: List[dict], fm: dict) -> dict:
+def dump_front_matter_with_multiline_schedule(fm: dict) -> str:
     """
-    Write internal days back to fm['schedule'] in our internal shape.
-    Mark fm['_schedule_is_internal_shape__']=True so the writer uses our emitter.
+    Return a YAML string with keys emitted in the original order of `fm`.
+    The 'schedule' key is rendered with a custom multi-line emitter in-place,
+    preserving its original position. Ephemeral helper keys are not emitted.
     """
-    try:
-        out_sched = []
-        for d in days:
-            week = d.get("week", "")
-            slot = d.get("slot", "")
+    # Add any top-level ephemeral keys to skip here:
+    skip_keys = {"_schedule_is_internal_shape__"}
 
-            lectures = d.get("lectures", []) or []
-            if lectures:
-                lec_title = lectures[0].get("title", "")
-                lec_link = lectures[0].get("link", None)
-            else:
-                lec_title, lec_link = "", None
+    lines = []
+    for key, value in fm.items():
+        if key in skip_keys:
+            continue
 
-            day_out = {
-                "week": week,
-                "slot": slot,
-                "lectures": lectures,
-                "readings": d.get("readings", []),
-                "deliverables": d.get("deliverables", []),
-            }
-            if lec_title:
-                day_out["title"] = lec_title
-            if lec_link:
-                day_out["link"] = lec_link
+        if key == "schedule":
+            # Custom, multi-line schedule emission at the original position.
+            lines.append("schedule:")
+            schedule = value or []
+            for day in schedule:
+                lines.append(_dump_schedule_one_day(day, indent_spaces=2))
+        else:
+            # Emit this single key as YAML while preserving nested order.
+            # safe_dump on a one-key dict yields "key: value\n" without '---'.
+            snippet = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True)
+            lines.append(snippet.rstrip("\n"))
 
-            out_sched.append(day_out)
+    return "\n".join(lines) + "\n"
 
-        new_fm = dict(fm)
-        new_fm["schedule"] = out_sched
-        new_fm["_schedule_is_internal_shape__"] = True
-        return new_fm
-    except Exception as e:
-        print(f"[serialize_schedule_to_front_matter] {e}")
-        traceback.print_exc()
-        raise
 
 # =========================================================
 # Main Application — Treeview + basic editing
