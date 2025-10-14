@@ -68,6 +68,12 @@ python canvas_update_schedule_from_md.py /path/to/syllabus2.md --apply
 
 # Optional: JSON config (keys: CANVAS_API_URL, CANVAS_API_TOKEN, CANVAS_COURSE_ID, TZ)
 python canvas_update_schedule_from_md.py /path/to/syllabus2.md --config config.json --apply
+
+# Control behavior for existing modules:
+
+  --existing-modules delete     # (default) delete pre-existing modules before rebuilding
+  --existing-modules unpublish  # unpublish pre-existing modules (leave them otherwise intact)
+  --existing-modules leave      # do nothing to pre-existing modules; leave their published state as-is
 """
 
 import argparse
@@ -630,27 +636,52 @@ def _index_pages_by_title(pages: List[Dict[str, Any]]) -> Dict[str, Dict[str, An
         out[_norm(title)] = p
     return out
     
-def rebuild_all_modules(client: CanvasClient, plan: SyllabusPlan, tz_name: str, apply: bool, base_url: Optional[str] = None) -> List[str]:
+def rebuild_all_modules(client: CanvasClient, plan: SyllabusPlan, tz_name: str, apply: bool, base_url: Optional[str] = None, existing_action: str = "delete") -> List[str]:
     actions: List[str] = []
 
-    # 1) Delete existing modules (items first)
+    # 1) Handle existing modules according to policy
     existing = client.list_modules()
-    for mod in existing:
-        for it in client.list_module_items(mod["id"]):
-            url = f"{client.api_url}/api/v1/courses/{client.course_id}/modules/{mod['id']}/items/{it['id']}"
-            if apply:
-                r = requests.delete(url, headers=client.headers)
-                if r.status_code >= 400:
-                    actions.append(f"[error] Failed to delete module item id={it['id']} in module id={mod['id']}: {r.status_code}")
+
+    policy = (existing_action or "delete").lower().strip()
+    if policy not in {"delete", "unpublish", "leave"}:
+        actions.append(f"[warn] Unknown existing_action='{existing_action}', defaulting to 'delete'.")
+        policy = "delete"
+
+    if policy == "delete":
+        # Remove items, then modules
+        for mod in existing:
+            for it in client.list_module_items(mod["id"]):
+                url = f"{client.api_url}/api/v1/courses/{client.course_id}/modules/{mod['id']}/items/{it['id']}"
+                if apply:
+                    r = requests.delete(url, headers=client.headers)
+                    if r.status_code >= 400:
+                        actions.append(f"[error] Failed to delete module item id={it['id']} in module id={mod['id']}: {r.status_code}")
+                    else:
+                        actions.append(f"[del-item] '{it.get('title','')}' from '{mod.get('name','')}'")
                 else:
-                    actions.append(f"[del-item] '{it.get('title','')}' from '{mod.get('name','')}'")
+                    actions.append(f"[del-item] (dry-run) '{it.get('title','')}' from '{mod.get('name','')}'")
+            if apply:
+                ok = client.delete_module(mod["id"])
+                actions.append(f"[del-module] '{mod.get('name','')}'" if ok else f"[error] Failed to delete module id={mod['id']}")
             else:
-                actions.append(f"[del-item] (dry-run) '{it.get('title','')}' from '{mod.get('name','')}'")
-        if apply:
-            ok = client.delete_module(mod["id"])
-            actions.append(f"[del-module] '{mod.get('name','')}'" if ok else f"[error] Failed to delete module id={mod['id']}")
-        else:
-            actions.append(f"[del-module] (dry-run) '{mod.get('name','')}'")
+                actions.append(f"[del-module] (dry-run) '{mod.get('name','')}'")
+
+    elif policy == "unpublish":
+        # Keep modules and items; just unpublish the module object
+        for mod in existing:
+            if apply:
+                u = f"{client.api_url}/api/v1/courses/{client.course_id}/modules/{mod['id']}"
+                r = requests.put(u, headers=client.headers, json={"module": {"published": False}})
+                if r.status_code < 400:
+                    actions.append(f"[unpublish] Existing module '{mod.get('name','')}'")
+                else:
+                    actions.append(f"[warn] Failed to unpublish existing module id={mod['id']}: {r.status_code}")
+            else:
+                actions.append(f"[unpublish] (dry-run) Existing module '{mod.get('name','')}'")
+
+    elif policy == "leave":
+        # Do nothing to existing modules (leave as-is, including published state)
+        actions.append("[leave] Left existing modules unchanged")
 
     # 2) Create fresh date modules (one per meeting) — title is "DATE - <meeting.title>" (no "Activity:")
     date_to_module_id: Dict[date, int] = {}
@@ -918,6 +949,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--apply", action="store_true", help="Apply changes to Canvas (otherwise dry-run)")
     parser.add_argument("--base-url", dest="base_url", default=None,
                         help="Base URL to prepend to relative links (e.g., https://example.edu/course)")
+    parser.add_argument(
+        "--existing-modules",
+        choices=["delete", "unpublish", "leave"],
+        default="delete",
+        help="What to do with pre-existing modules before rebuilding: delete them (default), unpublish them, or leave them alone"
+    )                        
     args = parser.parse_args(argv)
 
     try:
@@ -947,7 +984,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         # 1) Update due dates
         actions += apply_due_dates(client, due_map, args.apply)
         # 2) Rebuild modules (now passes base_url) and populate
-        actions += rebuild_all_modules(client, plan, tz_name, args.apply, base_url=args.base_url)
+        actions += rebuild_all_modules(
+            client,
+            plan,
+            tz_name,
+            args.apply,
+            base_url=args.base_url,
+            existing_action=args.existing_modules
+        )
+
 
         print("\nActions:")
         for a in actions:
