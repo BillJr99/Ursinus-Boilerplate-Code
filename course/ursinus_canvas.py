@@ -45,6 +45,7 @@ skipdiscussions = False
 skipassignments = False
 skipofficehours = False
 skiplecturecalendar = False
+skipalldeletes = False
 
 def get_local_time(dt):
     # Convert string dates to datetime
@@ -257,6 +258,9 @@ def delete_assignment_group_by_name(course, name):
             t.start()         
     
 def delete_old_data(course, canvas, coursecontext):
+    if skipalldeletes:
+        return
+        
     t1 = threading.Thread(target=delete_all_assignments, args=(course,))
     t2 = threading.Thread(target=delete_all_events, args=(canvas,coursecontext,))
     t3 = threading.Thread(target=delete_all_modules, args=(course,))
@@ -1205,12 +1209,13 @@ def usage():
     print("\t[-s | --noassignments]\tDo not delete or re-create assignments (but still re-arrange existing ones in modules view)")
     print("\t[-o | --noofficehours]\tDo not delete or re-create office hours")
     print("\t[-l | --nolecturecalendar]\tDo not upload lecture calendar")
+    print("\t[-k | --nodeletes]\tDo not delete old data")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
     
 # Parse user options
 # https://docs.python.org/3/library/getopt.html
 try:
-    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsol", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar"])
+    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
 except getopt.GetoptError as err:
     # print help information and exit:
     print(err)  # will print something like "option -z not recognized"
@@ -1251,6 +1256,8 @@ for o, a in opts:
         skipofficehours = True   
     elif o in ("-l", "--nolecturecalendar"):
         skiplecturecalendar = True
+    elif o in ("-k", "--nodeletes"):
+        skipalldeletes = True
 
 if USER_ID is None:
     USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
