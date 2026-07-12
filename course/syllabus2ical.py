@@ -246,8 +246,11 @@ for i in range(len(postdict['info']['class_meets_locations'])):
             
         if not (hdatekey is None):      
             for holiday in postdict['university'][hdatekey]:
-                dtholiday = getDateString(parseDate(holiday['date']))       
-                rrule = rrule + "\r\nEXDATE:" + dtholiday
+                dtholiday = parseDate(holiday['date'])
+
+                # only except holidays that fall on this recurrence's weekday, and emit a DATE-TIME EXDATE matching DTSTART (RFC 5545)
+                if dtholiday.weekday() == geticaldayoffset(meeting['day']):
+                    rrule = rrule + "\r\nEXDATE;TZID=US-Eastern:" + getDateString(dtholiday) + "T" + getTimeString(parseTime(meeting['starttime']))
 
         # Write Key Date Exceptions
         if postdict['university']['semester'] == "Fall":
@@ -259,11 +262,12 @@ for i in range(len(postdict['info']['class_meets_locations'])):
             
         if not (kdatekey is None):
             for keydate in postdict['university'][kdatekey]:
-                dtkeydate = getDateString(parseDate(keydate['kdate']))
-                keydescription = keydate['kname']    
+                dtkeydate = parseDate(keydate['kdate'])
+                keydescription = keydate['kname']
 
-                if keydescription.lower().startswith("designated"):
-                    rrule = rrule + "\r\nEXDATE:" + dtkeydate
+                # only except designated dates that fall on this recurrence's weekday, and emit a DATE-TIME EXDATE matching DTSTART (RFC 5545)
+                if keydescription.lower().startswith("designated") and dtkeydate.weekday() == geticaldayoffset(meeting['day']):
+                    rrule = rrule + "\r\nEXDATE;TZID=US-Eastern:" + getDateString(dtkeydate) + "T" + getTimeString(parseTime(meeting['starttime']))
 
         outf.write("BEGIN:VEVENT\r\nUID:" + stripnobool(genuid()) + "\r\nDTSTAMP;TZID=US-Eastern:" + dtstart + "\r\nDTSTART;TZID=US-Eastern:" + dtstart + "\r\nDTEND;TZID=US-Eastern:" + dtend + "\r\n" + rrule + "\r\nSUMMARY:" + coursenum + " " + coursename + " Section " + section + " Class Meeting\r\nLOCATION:" + location + "\r\nDESCRIPTION:\r\nPRIORITY:3\r\nEND:VEVENT\r\n")
 
@@ -360,9 +364,12 @@ for instructor in postdict['instructors']:
                 hdatekey = None
                 
             if not (hdatekey is None):      
-                for holiday in postdict['university'][hdatekey]:        
-                    dtholiday = getDateString(parseDate(holiday['date']))       
-                    rrule = rrule + "\r\nEXDATE:" + dtholiday
+                for holiday in postdict['university'][hdatekey]:
+                    dtholiday = parseDate(holiday['date'])
+
+                    # only except holidays that fall on this recurrence's weekday, and emit a DATE-TIME EXDATE matching DTSTART (RFC 5545)
+                    if dtholiday.weekday() == geticaldayoffset(officehour['day']):
+                        rrule = rrule + "\r\nEXDATE;TZID=US-Eastern:" + getDateString(dtholiday) + "T" + getTimeString(parseTime(officehour['starttime']))
                     
             # Write Key Date Exceptions
             if postdict['university']['semester'] == "Fall":
@@ -374,11 +381,12 @@ for instructor in postdict['instructors']:
                 
             if not (kdatekey is None):
                 for keydate in postdict['university'][kdatekey]:
-                    dtkeydate = getDateString(parseDate(keydate['kdate']))
-                    keydescription = keydate['kname']    
+                    dtkeydate = parseDate(keydate['kdate'])
+                    keydescription = keydate['kname']
 
-                    if keydescription.lower().startswith("designated"):
-                        rrule = rrule + "\r\nEXDATE:" + dtkeydate                
+                    # only except designated dates that fall on this recurrence's weekday, and emit a DATE-TIME EXDATE matching DTSTART (RFC 5545)
+                    if keydescription.lower().startswith("designated") and dtkeydate.weekday() == geticaldayoffset(officehour['day']):
+                        rrule = rrule + "\r\nEXDATE;TZID=US-Eastern:" + getDateString(dtkeydate) + "T" + getTimeString(parseTime(officehour['starttime']))
 
             outf.write("BEGIN:VEVENT\r\nUID:" + stripnobool(genuid()) + "\r\nDTSTAMP;TZID=US-Eastern:" + dtstart + "\r\nDTSTART;TZID=US-Eastern:" + dtstart + "\r\nDTEND;TZID=US-Eastern:" + dtend + "\r\n" + rrule + "\r\nSUMMARY:" + coursenum + " " + coursename + " Office Hours with " + instructorname + "\r\nLOCATION:" + location + "\r\nDESCRIPTION:\r\nPRIORITY:3\r\nEND:VEVENT\r\n")
 
