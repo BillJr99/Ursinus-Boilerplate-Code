@@ -314,16 +314,17 @@ def omit_attendance_grade(course, ATTENDANCE_NAME="Roll Call Attendance"):
     if attendance_assignment:
         printlog(f"Found attendance assignment: {attendance_assignment.name} (ID: {attendance_assignment.id})")
 
-        # Update the assignment to be ungraded and excluded from the final grade
+        # Update the assignment to be excluded from the final grade and hidden from students
         attendance_assignment.edit(
             assignment={
                 "submission_types": ["none"],  # No submission
-                "points_possible": 100,  # No points assigned
+                "points_possible": 100,  # Points remain, but do not count toward the final grade
                 "grading_type": "points",  # Enables attendance tracking
-                "omit_from_final_grade": True  # Ensures it's excluded from the final grade
+                "omit_from_final_grade": True,  # Ensures it's excluded from the final grade
+                "published": False  # Hide the assignment from students by unpublishing it
             }
         )
-        printlog(f"Updated assignment: {attendance_assignment.name} is now ungraded and does not count toward the final grade.")
+        printlog(f"Updated assignment: {attendance_assignment.name} is now hidden and does not count toward the final grade.")
     else:
         printlog("Roll Call Attendance assignment not found.")    
             
