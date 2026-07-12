@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# Course workspace provisioning: files that must never reach a repository
+# ---------------------------------------------------------------------------
+#
+# The scripts themselves contain no secrets. Every GUID in them is a published
+# Microsoft first-party application id, and there is no client secret, password,
+# or key anywhere in the source. What is dangerous is what the scripts write
+# beside themselves at runtime.
+
+# The cached sign-in. This holds a refresh token, which is a bearer credential.
+# It is DPAPI-encrypted and therefore useless on another machine, but it is still
+# a credential and has no business in version control.
+.tokencache.xml
+*.tokencache.xml
+
+# The run log. With RedactEmailsInLogs set to $false, this contains student email
+# addresses in cleartext. A class roster is an education record under FERPA, so
+# this must not be committed, published, or shared.
+logs/
+*.log
+
+# Modules staged by Save-Module. Large, machine-specific, and reconstructible on
+# demand, so there is nothing to gain by committing them.
+modules/
+
+# Local configuration overrides, which are where a real tenant id or a private
+# app registration's client id would end up. Neither is strictly a secret, but
+# both are identifying, and the point of an override file is that it stays local.
+config.json
+config.local.json
+*.local.json
+
+# Python variant, if it is kept alongside
+.venv/
+__pycache__/
+token_cache.bin
+
+# Editor and OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
