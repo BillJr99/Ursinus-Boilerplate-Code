@@ -41,3 +41,5 @@ token_cache.bin
 Thumbs.db
 desktop.ini
 .DS_Store
+
+*.objdump
