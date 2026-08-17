@@ -248,15 +248,42 @@ def delete_all_discussion_topics(course):
         child_threads.append(t)
         t.start() 
 
+def get_assignments_in_group(course, group):
+    # Prefer the membership that came back with the group listing: asking for it there costs
+    # no additional request, where listing every assignment in the course costs several pages
+    assignments = getattr(group, 'assignments', None)
+
+    if assignments is None: # older response without the include - fall back rather than assume empty
+        assignments = []
+        for assignment in course.get_assignments():
+            if assignment.assignment_group_id == group.id:
+                assignments.append({'name': assignment.name, 'points_possible': assignment.points_possible})
+
+    return assignments
+
 def delete_assignment_group_by_name(course, name):
-    groups = course.get_assignment_groups()
-    
+    # Canvas deletes a group's assignments along with the group unless move_assignments_to is
+    # given, so an assignment that matched no grade breakdown category would be created,
+    # published, and then silently destroyed with the default group it was left in
+    groups = course.get_assignment_groups(include=['assignments'])
+
     for group in groups:
         if group.name == name:
-            t = threading.Thread(target=dodelete, args=(group,))
-            child_threads.append(t)
-            t.start()         
-    
+            stranded = get_assignments_in_group(course, group)
+
+            if len(stranded) > 0:
+                printlog("*** WARNING: NOT deleting the assignment group " + name + ": it still holds " + str(len(stranded)) + " assignment(s), which Canvas would delete along with it.")
+                printlog("*** The following assignments matched no grade_breakdown category, so they are unweighted and will not count toward the final grade:")
+
+                for assignment in stranded:
+                    printlog("***\t" + str(assignment['name']) + " (" + str(assignment['points_possible']) + " points)")
+
+                printlog("*** Prefix each name with a grade breakdown category (Category: Deliverable), or add a matching grade_breakdown category, and deploy again.")
+            else:
+                t = threading.Thread(target=dodelete, args=(group,))
+                child_threads.append(t)
+                t.start()
+
 def delete_old_data(course, canvas, coursecontext):
     if skipalldeletes:
         return
