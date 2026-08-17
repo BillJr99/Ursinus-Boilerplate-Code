@@ -1198,8 +1198,8 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
                 inputdict['location_name'] = location.strip()
-                inputdict['start_at'] = dtstart
-                inputdict['end_at'] = dtend 
+                inputdict['start_at'] = startd
+                inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 
@@ -1224,8 +1224,8 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
                 inputdict['location_name'] = location.strip()
-                inputdict['start_at'] = dtstart
-                inputdict['end_at'] = dtend 
+                inputdict['start_at'] = startd
+                inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 
