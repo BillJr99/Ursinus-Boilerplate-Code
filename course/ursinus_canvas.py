@@ -623,18 +623,46 @@ def add_assignments_to_groups(course, postdict):
             group = quizgroup            
         else:
             if 'grade_breakdown' in postdict:
+                # First sweep: the whole category name (less a trailing s) must appear in the
+                # assignment name.  This runs to completion before the retry below, so anything
+                # that groups today groups identically today
                 for breakdown in (postdict['grade_breakdown'] or []): # the key can be present with no value
                     category = breakdown['category']
-                    
+
                     # remove last s if plural
                     categorylookup = category
-                    if category[-1] == 's':
+                    if len(category) > 0 and category[-1] == 's':
                         categorylookup = category[:-1]
-                        
+
                     if categorylookup in name:
                         group = get_assignment_group_containing_label(groups, category)
                         break
-                        
+
+                # Second sweep: only if nothing at all matched above, retry on the category text
+                # ahead of a parenthetical, so that a category named "Essay 1 (1200-1500 words)"
+                # can still claim "Essay 1: First Draft" instead of stranding it.  Do not merge
+                # this into the sweep above: a later category's leading text would then be able to
+                # beat an earlier category's whole-name match and re-home an assignment that is
+                # grouped correctly today
+                if group is None:
+                    for breakdown in (postdict['grade_breakdown'] or []):
+                        category = breakdown['category']
+
+                        categorylookup = category.split(" (")[0]
+
+                        if categorylookup == category or len(categorylookup) == 0:
+                            continue # no parenthetical to drop, or nothing would be left to match on
+
+                        # remove last s if plural
+                        if categorylookup[-1] == 's':
+                            categorylookup = categorylookup[:-1]
+
+                        if len(categorylookup) > 0 and categorylookup in name:
+                            group = get_assignment_group_containing_label(groups, category)
+                            printlog("Grouping " + name + " under " + category + " by its leading text \"" + categorylookup + "\": the full category name does not appear in the assignment name")
+                            break
+
+
         if not (group is None):
             pos = getposidxandinc(posidx, group)
             groupid = group.id
