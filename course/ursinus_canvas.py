@@ -248,15 +248,42 @@ def delete_all_discussion_topics(course):
         child_threads.append(t)
         t.start() 
 
+def get_assignments_in_group(course, group):
+    # Prefer the membership that came back with the group listing: asking for it there costs
+    # no additional request, where listing every assignment in the course costs several pages
+    assignments = getattr(group, 'assignments', None)
+
+    if assignments is None: # older response without the include - fall back rather than assume empty
+        assignments = []
+        for assignment in course.get_assignments():
+            if assignment.assignment_group_id == group.id:
+                assignments.append({'name': assignment.name, 'points_possible': assignment.points_possible})
+
+    return assignments
+
 def delete_assignment_group_by_name(course, name):
-    groups = course.get_assignment_groups()
-    
+    # Canvas deletes a group's assignments along with the group unless move_assignments_to is
+    # given, so an assignment that matched no grade breakdown category would be created,
+    # published, and then silently destroyed with the default group it was left in
+    groups = course.get_assignment_groups(include=['assignments'])
+
     for group in groups:
         if group.name == name:
-            t = threading.Thread(target=dodelete, args=(group,))
-            child_threads.append(t)
-            t.start()         
-    
+            stranded = get_assignments_in_group(course, group)
+
+            if len(stranded) > 0:
+                printlog("*** WARNING: NOT deleting the assignment group " + name + ": it still holds " + str(len(stranded)) + " assignment(s), which Canvas would delete along with it.")
+                printlog("*** The following assignments matched no grade_breakdown category, so they are unweighted and will not count toward the final grade:")
+
+                for assignment in stranded:
+                    printlog("***\t" + str(assignment['name']) + " (" + str(assignment['points_possible']) + " points)")
+
+                printlog("*** Prefix each name with a grade breakdown category (Category: Deliverable), or add a matching grade_breakdown category, and deploy again.")
+            else:
+                t = threading.Thread(target=dodelete, args=(group,))
+                child_threads.append(t)
+                t.start()
+
 def delete_old_data(course, canvas, coursecontext):
     if skipalldeletes:
         return
@@ -385,7 +412,15 @@ def countWeeks(d1, d2):
     # https://stackoverflow.com/questions/14191832/how-to-calculate-difference-between-two-dates-in-weeks-in-python
     monday1 = (d1 - timedelta(days=d1.weekday()))
     monday2 = (d2 - timedelta(days=d2.weekday()))
-    return (monday2 - monday1).days / 7
+
+    # Canvas wants an integer count of recurrences.  Snapping both ends back to Monday above
+    # already divides evenly and already gives a term that ends mid-week its final week of
+    # meetings, so this rounds up rather than truncating only to keep that choice if the snap
+    # ever changes: one extra event past the end of term is cheaper than a missing class
+    # meeting.  Do not simplify to int(), which would silently pick truncation instead
+    weeks = -(-(monday2 - monday1).days // 7) # ceiling division
+
+    return max(0, min(weeks, 200)) # Canvas rejects a negative count, and caps duplicates at 200
 
 def getDayCodeNum(daycode):
     if daycode == 'M':
@@ -452,8 +487,18 @@ def getDayNum(dayidx, M, T, W, R, F, S, U):
 
     return result
     
-def getTimeString(t):   
-    return t.strftime('%H%M%S')    
+def getSectionName(coursesections, i):
+    # course_sections is expected to line up with class_meets_locations; if it is short, say so
+    # and carry on unnamed rather than failing the whole deploy over a label
+    if i < len(coursesections):
+        return stripnobool(coursesections[i].get('section') or "")
+
+    printlog("Warning: course_sections has no entry " + str(i + 1) + " to match class_meets_locations; writing this section's events without a section name")
+
+    return ""
+
+def getTimeString(t):
+    return t.strftime('%H%M%S')
     
 def parseDate(dt, fmt='%Y/%m/%d'):
     return datetime.strptime(dt, fmt)
@@ -596,18 +641,45 @@ def add_assignments_to_groups(course, postdict):
             group = quizgroup            
         else:
             if 'grade_breakdown' in postdict:
-                for breakdown in postdict['grade_breakdown']:        
+                # First sweep: the whole category name (less a trailing s) must appear in the
+                # assignment name.  This runs to completion before the retry below, so anything
+                # that groups today groups identically today
+                for breakdown in (postdict['grade_breakdown'] or []): # the key can be present with no value
                     category = breakdown['category']
-                    
+
                     # remove last s if plural
                     categorylookup = category
-                    if category[-1] == 's':
+                    if len(category) > 0 and category[-1] == 's':
                         categorylookup = category[:-1]
-                        
+
                     if categorylookup in name:
                         group = get_assignment_group_containing_label(groups, category)
                         break
-                        
+
+                # Second sweep: only if nothing at all matched above, retry on the category text
+                # ahead of a parenthetical, so that a category named "Essay 1 (1200-1500 words)"
+                # can still claim "Essay 1: First Draft" instead of stranding it.  Do not merge
+                # this into the sweep above: a later category's leading text would then be able to
+                # beat an earlier category's whole-name match and re-home an assignment that is
+                # grouped correctly today
+                if group is None:
+                    for breakdown in (postdict['grade_breakdown'] or []):
+                        category = breakdown['category']
+
+                        categorylookup = category.split(" (")[0]
+
+                        if categorylookup == category or len(categorylookup) == 0:
+                            continue # no parenthetical to drop, or nothing would be left to match on
+
+                        # remove last s if plural
+                        if categorylookup[-1] == 's':
+                            categorylookup = categorylookup[:-1]
+
+                        if len(categorylookup) > 0 and categorylookup in name:
+                            group = get_assignment_group_containing_label(groups, category)
+                            printlog("Grouping " + name + " under " + category + " by its leading text \"" + categorylookup + "\": the full category name does not appear in the assignment name")
+                            break
+
         if not (group is None):
             pos = getposidxandinc(posidx, group)
             groupid = group.id
@@ -654,7 +726,11 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     coursenum = postdict['info']['course_number']
     coursename = postdict['info']['course_title']
     startdate = postdict['info']['course_start_date']
-    enddate = postdict['info']['course_end_date']   
+    enddate = postdict['info']['course_end_date']
+
+    # the last day the class actually meets, before the due date offset below: recurring events
+    # have to count weeks against this, or a term ending on a Sunday picks up an extra week
+    lastclassdate = enddate
 
     # offset the course end date by the same amount as assignments so that assignments can be due just past midnight if the grace period allows it; preserve the date string format so we can manipulate it consistently later
     enddate = getDateString(adddays(parseDate(enddate), DUE_DATE_OFFSET), fmt='%Y/%m/%d')
@@ -721,8 +797,11 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     asmtidx = 1 # assignment index position as well
     
     # Write the lecture schedule as a recurring event
+    coursesections = postdict['info'].get('course_sections') or []
+
     for i in range(len(postdict['info']['class_meets_locations'])):
-        section = postdict['info']['course_sections'][i]['section']
+        section = getSectionName(coursesections, i)
+
         for meeting in postdict['info']['class_meets_locations'][i]['section']:
             day = meeting['day']
             daynum = getDayCodeNum(meeting['day'])
@@ -738,8 +817,12 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             dtend = dtend + "T"
             dtend = dtend + getTimeString(parseTime(meeting['endtime'])) # leave in local time
 
-            location = meeting['place']
-            summary = coursenum + " " + coursename + " Section " + section + " Class Meeting"
+            location = meeting.get('place') or ""
+
+            if len(section) > 0:
+                summary = coursenum + " " + coursename + " Section " + section + " Class Meeting"
+            else:
+                summary = coursenum + " " + coursename + " Class Meeting"
 
             # Write lecture schedule events
             if not skiplecturecalendar:
@@ -747,14 +830,14 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = summary.strip()
                 inputdict['description'] = summary.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = dtstart
                 inputdict['end_at'] = dtend            
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 inputdict['duplicate'] = {}
                 inputdict['duplicate']['frequency'] = "weekly"
-                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(enddate))
+                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(lastclassdate))
             
                 create_calendar_event(canvas, inputdict)
 
@@ -767,11 +850,13 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             title = item['title']
         else:
             title = "N/A"
-        if 'link' in item:
+        # an absent or empty link is fine and reads as no link at all, the same test the
+        # deliverable links below already use
+        if 'link' in item and len(str(item['link']).strip()) > 0 and str(item['link']).strip().lower() != "false":
             link = item['link']
         else:
             link = ""
-   
+
         startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
         coursedt = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
         coursedtstr = coursedt.strftime('%a, %b %d, %Y')
@@ -837,7 +922,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         scheduleitems = scheduleitems + 1
         
         # Create a Module Entry for Class Notes Link
-        if 'link' in item:
+        if link:
             inputdict = {}
             inputdict['title'] = "Activity: " + title
             inputdict['type'] = "ExternalUrl"
@@ -847,7 +932,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             add_module_item(module, inputdict)
             
         if 'deliverables' in item:
-            for deliverable in item['deliverables']:        
+            for deliverable in (item['deliverables'] or []): # the key can be present with no value
                 dtitle = deliverable['dtitle']
                 if 'dlink' in deliverable and len(str(deliverable['dlink']).strip()) > 0 and str(deliverable['dlink']).strip().lower() != "false":
                     dlink = deliverable['dlink']
@@ -868,12 +953,15 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     duedate = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
                     duedate = getDateString(adddays(duedate, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
                     
+                    # read the submission types once: the key can be present with no value
+                    submissiontypes = str(deliverable.get('submission_types') or "").lower()
+
                     inputdict = {}
                     inputdict['name'] = description
                     inputdict['submission_types'] = []
-                    if "submission_types" in deliverable and "onpaper" in deliverable['submission_types'].lower():
+                    if "onpaper" in submissiontypes:
                         inputdict['submission_types'].append('on_paper')
-                    elif "submission_types" in deliverable and "noupload" in deliverable['submission_types'].lower():
+                    elif "noupload" in submissiontypes:
                         inputdict['submission_types'].append('online_text_entry')                    
                     else:
                         inputdict['submission_types'].append('online_upload')
@@ -884,7 +972,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                         inputdict['allowed_extensions'].append('gz')
                         inputdict['allowed_extensions'].append('rar')
                         inputdict['allowed_extensions'].append('7z')
-                        if "submission_types" in deliverable and "written" in deliverable['submission_types'].lower():
+                        if "written" in submissiontypes:
                             inputdict['submission_types'].append('online_text_entry')
                             inputdict['allowed_extensions'].append('pdf')
                             inputdict['allowed_extensions'].append('doc')
@@ -1034,7 +1122,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     add_module_item(module, inputdict)  
                     
         if 'readings' in item:
-            for reading in item['readings']:    
+            for reading in (item['readings'] or []): # the key can be present with no value
                 rtitle = reading['rtitle']
                 if 'rlink' in reading and len(str(reading['rlink']).strip()) > 0 and str(reading['rlink']).strip().lower() != "false":
                     rlink = reading['rlink']
@@ -1072,10 +1160,12 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         printlog("Writing Office Hours...")
         
         # Write Office Hours as a Recurring Event
-        for instructor in postdict['instructors']:
+        for instructor in (postdict.get('instructors') or []):
             instructorname = instructor['name']
-            
-            for officehour in instructor['officehours']:     
+
+            # a Writing Fellow, lab assistant, or other staff member may hold no scheduled
+            # drop-in hours at all, so the key can be missing or present with no value
+            for officehour in (instructor.get('officehours') or []):
                 day = officehour['day']
                 daynum = getDayCodeNum(officehour['day'])
                 
@@ -1090,7 +1180,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 dtend = dtend + "T"
                 dtend = dtend + getTimeString(parseTime(officehour['endtime'])) # leave in local time
 
-                location = officehour['location']
+                location = officehour.get('location') or ""
                 
                 summary = coursenum + " " + coursename + " Drop-In / Office Hours with " + instructorname
                 
@@ -1098,34 +1188,38 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = summary.strip()
                 inputdict['description'] = summary.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = dtstart
                 inputdict['end_at'] = dtend
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 inputdict['duplicate'] = {}
                 inputdict['duplicate']['frequency'] = "weekly"
-                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(enddate))
+                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(lastclassdate))
                 
                 create_calendar_event(canvas, inputdict)  
 
     printlog("Writing Exams...")
     
-    # Write Exam Dates 
-    for i in range(len(postdict['info']['class_meets_locations'])):
-        section = postdict['info']['course_sections'][i]['section']       
+    # Write Exam Dates
+    # a course with no exams can omit these keys, and a section can be missing an entry
+    midtermexams = postdict['info'].get('midtermexam') or []
+    finalexams = postdict['info'].get('finalexam') or []
 
-        if not (postdict['info']['midtermexam'][i]['mdate'] == "TBD"):
-            startd = getDateString(parseDate(postdict['info']['midtermexam'][i]['mdate']))
+    for i in range(len(postdict['info']['class_meets_locations'])):
+        section = getSectionName(coursesections, i)
+
+        if i < len(midtermexams) and not (midtermexams[i]['mdate'] == "TBD"):
+            startd = getDateString(parseDate(midtermexams[i]['mdate']))
             startd = startd + "T"
-            startd = startd + getTimeString(parseTime(postdict['info']['midtermexam'][i]['mstarttime'])) # leave in local time
-            
-            endd = getDateString(parseDate(postdict['info']['midtermexam'][i]['mdate']))
+            startd = startd + getTimeString(parseTime(midtermexams[i]['mstarttime'])) # leave in local time
+
+            endd = getDateString(parseDate(midtermexams[i]['mdate']))
             endd = endd + "T"
-            endd = endd + getTimeString(parseTime(postdict['info']['midtermexam'][i]['mendtime'])) # leave in local time
-            
+            endd = endd + getTimeString(parseTime(midtermexams[i]['mendtime'])) # leave in local time
+
             dtitle = "Midterm Exam"
-            location = postdict['info']['midtermexam'][i]['mroom']
+            location = midtermexams[i].get('mroom') or ""
             
             # Write the exam:
             if not skiplecturecalendar:
@@ -1133,25 +1227,25 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
-                inputdict['location_name'] = location.strip()
-                inputdict['start_at'] = dtstart
-                inputdict['end_at'] = dtend 
+                inputdict['location_name'] = stripnobool(location)
+                inputdict['start_at'] = startd
+                inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 
                 create_calendar_event(canvas, inputdict)  
 
-        if not (postdict['info']['finalexam'][i]['fdate'] == "TBD"):
-            startd = getDateString(parseDate(postdict['info']['finalexam'][i]['fdate']))
+        if i < len(finalexams) and not (finalexams[i]['fdate'] == "TBD"):
+            startd = getDateString(parseDate(finalexams[i]['fdate']))
             startd = startd + "T"
-            startd = startd + getTimeString(parseTime(postdict['info']['finalexam'][i]['fstarttime'])) # leave in local time, timezone info given above assuming Eastern Time
-            
-            endd = getDateString(parseDate(postdict['info']['finalexam'][i]['fdate']))
+            startd = startd + getTimeString(parseTime(finalexams[i]['fstarttime'])) # leave in local time, timezone info given above assuming Eastern Time
+
+            endd = getDateString(parseDate(finalexams[i]['fdate']))
             endd = endd + "T"
-            endd = endd + getTimeString(parseTime(postdict['info']['finalexam'][i]['fendtime'])) # leave in local time, timezone info given above assuming Eastern Time
-            
+            endd = endd + getTimeString(parseTime(finalexams[i]['fendtime'])) # leave in local time, timezone info given above assuming Eastern Time
+
             dtitle = "Final Exam"
-            location = postdict['info']['finalexam'][i]['froom']
+            location = finalexams[i].get('froom') or ""
             
             # Write the exam:
             if not skiplecturecalendar:
@@ -1159,9 +1253,9 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
-                inputdict['location_name'] = location.strip()
-                inputdict['start_at'] = dtstart
-                inputdict['end_at'] = dtend 
+                inputdict['location_name'] = stripnobool(location)
+                inputdict['start_at'] = startd
+                inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 
@@ -1170,9 +1264,9 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     printlog("Creating Assignment Groups...")
     
     # Write Out Assignment Groups   
-    if 'grade_breakdown' in postdict:        
-        for breakdown in postdict['grade_breakdown']:
-            inputdict = {} 
+    if 'grade_breakdown' in postdict:
+        for breakdown in (postdict['grade_breakdown'] or []): # the key can be present with no value
+            inputdict = {}
             
             inputdict['name'] = breakdown['category']
             inputdict['group_weight'] = float(rchop(breakdown['weight'], '%'))
@@ -1213,81 +1307,84 @@ def usage():
     print("\t[-k | --nodeletes]\tDo not delete old data")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
     
-# Parse user options
-# https://docs.python.org/3/library/getopt.html
-try:
-    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
-except getopt.GetoptError as err:
-    # print help information and exit:
-    print(err)  # will print something like "option -z not recognized"
-    usage()
-    sys.exit(2)
-
-courseid = -1
-markdownfile = None
-coursehomepage = None
-USER_ID = None
-API_KEY = None
-
-for o, a in opts:
-    if o in ("-h", "--help"):
+# Only run the deployment when invoked as a script, so that these functions can be imported
+if __name__ == "__main__":
+    # Parse user options
+    # https://docs.python.org/3/library/getopt.html
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
+    except getopt.GetoptError as err:
+        # print help information and exit:
+        print(err)  # will print something like "option -z not recognized"
         usage()
-        sys.exit()
-    elif o in ("-c", "--courseid"):
-        courseid = int(a)
-    elif o in ("-m", "--markdown"):
-        markdownfile = a
-    elif o in ("-w", "--webpage"):
-        coursehomepage = a
-    elif o in ("-a", "--apikey"):
-        API_KEY = a
-    elif o in ("-u", "--userid"):
-        USER_ID = a
-    elif o in ("-t", "--timezone"):
-        CANVAS_TIME_ZONE = a
-    elif o in ("-e", "--duetime"):
-        atimes = a.split("|")
-        DUE_TIME_ST = atimes[0]
-        DUE_TIME_DST = atimes[1]
-    elif o in ("-d", "--nodiscussions"):
-        skipdiscussions = True
-    elif o in ("-s", "--noassignments"):
-        skipassignments = True
-    elif o in ("-o", "--noofficehours"):
-        skipofficehours = True   
-    elif o in ("-l", "--nolecturecalendar"):
-        skiplecturecalendar = True
-    elif o in ("-k", "--nodeletes"):
-        skipalldeletes = True
+        sys.exit(2)
 
-if USER_ID is None:
-    USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
-if API_KEY is None:
-    API_KEY = input("Enter API Key (get from API_URL + /profile/settings): ")
+    courseid = -1
+    markdownfile = None
+    coursehomepage = None
+    USER_ID = None
+    API_KEY = None
+
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            usage()
+            sys.exit()
+        elif o in ("-c", "--courseid"):
+            courseid = int(a)
+        elif o in ("-m", "--markdown"):
+            markdownfile = a
+        elif o in ("-w", "--webpage"):
+            coursehomepage = a
+        elif o in ("-a", "--apikey"):
+            API_KEY = a
+        elif o in ("-u", "--userid"):
+            USER_ID = a
+        elif o in ("-t", "--timezone"):
+            CANVAS_TIME_ZONE = a
+            LOCALTIME = pytz.timezone(CANVAS_TIME_ZONE) # or get_local_time keeps deciding DST in the default zone
+        elif o in ("-e", "--duetime"):
+            atimes = a.split("|")
+            DUE_TIME_ST = atimes[0]
+            DUE_TIME_DST = atimes[1]
+        elif o in ("-d", "--nodiscussions"):
+            skipdiscussions = True
+        elif o in ("-s", "--noassignments"):
+            skipassignments = True
+        elif o in ("-o", "--noofficehours"):
+            skipofficehours = True   
+        elif o in ("-l", "--nolecturecalendar"):
+            skiplecturecalendar = True
+        elif o in ("-k", "--nodeletes"):
+            skipalldeletes = True
+
+    if USER_ID is None:
+        USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
+    if API_KEY is None:
+        API_KEY = input("Enter API Key (get from API_URL + /profile/settings): ")
     
-printlog("Instantiating Canvas...")
-# Instantiate Canvas and Course
-canvas = Canvas(API_URL, API_KEY)
-user = canvas.get_user(USER_ID)
+    printlog("Instantiating Canvas...")
+    # Instantiate Canvas and Course
+    canvas = Canvas(API_URL, API_KEY)
+    user = canvas.get_user(USER_ID)
 
-if courseid == -1:
-    courseid = get_courseid(canvas, user)
-if markdownfile is None:
-    markdownfile = input("Enter path to course syllabus markdown file: ")
-if coursehomepage is None:
-    coursehomepage = input("Enter course website (https://www.yourhomepage.com/course): ")
+    if courseid == -1:
+        courseid = get_courseid(canvas, user)
+    if markdownfile is None:
+        markdownfile = input("Enter path to course syllabus markdown file: ")
+    if coursehomepage is None:
+        coursehomepage = input("Enter course website (https://www.yourhomepage.com/course): ")
     
-course = canvas.get_course(courseid)
+    course = canvas.get_course(courseid)
 
-printlog("Reading Markdown...")
-# Read Course Markdown File
-process_markdown(markdownfile, canvas, course, courseid, coursehomepage)
+    printlog("Reading Markdown...")
+    # Read Course Markdown File
+    process_markdown(markdownfile, canvas, course, courseid, coursehomepage)
 
-printlog("Hiding/Showing Tabs...")
-# Hide Navigation Tabs
-arrange_tabs(course)
+    printlog("Hiding/Showing Tabs...")
+    # Hide Navigation Tabs
+    arrange_tabs(course)
 
-printlog("Finished: Waiting for Child Threads to Terminate")
-# Clean Up
-for t in child_threads:
-        t.join()
+    printlog("Finished: Waiting for Child Threads to Terminate")
+    # Clean Up
+    for t in child_threads:
+            t.join()
