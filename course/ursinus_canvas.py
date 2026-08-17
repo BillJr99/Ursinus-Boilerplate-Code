@@ -1213,81 +1213,83 @@ def usage():
     print("\t[-k | --nodeletes]\tDo not delete old data")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
     
-# Parse user options
-# https://docs.python.org/3/library/getopt.html
-try:
-    opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
-except getopt.GetoptError as err:
-    # print help information and exit:
-    print(err)  # will print something like "option -z not recognized"
-    usage()
-    sys.exit(2)
-
-courseid = -1
-markdownfile = None
-coursehomepage = None
-USER_ID = None
-API_KEY = None
-
-for o, a in opts:
-    if o in ("-h", "--help"):
+# Only run the deployment when invoked as a script, so that these functions can be imported
+if __name__ == "__main__":
+    # Parse user options
+    # https://docs.python.org/3/library/getopt.html
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
+    except getopt.GetoptError as err:
+        # print help information and exit:
+        print(err)  # will print something like "option -z not recognized"
         usage()
-        sys.exit()
-    elif o in ("-c", "--courseid"):
-        courseid = int(a)
-    elif o in ("-m", "--markdown"):
-        markdownfile = a
-    elif o in ("-w", "--webpage"):
-        coursehomepage = a
-    elif o in ("-a", "--apikey"):
-        API_KEY = a
-    elif o in ("-u", "--userid"):
-        USER_ID = a
-    elif o in ("-t", "--timezone"):
-        CANVAS_TIME_ZONE = a
-    elif o in ("-e", "--duetime"):
-        atimes = a.split("|")
-        DUE_TIME_ST = atimes[0]
-        DUE_TIME_DST = atimes[1]
-    elif o in ("-d", "--nodiscussions"):
-        skipdiscussions = True
-    elif o in ("-s", "--noassignments"):
-        skipassignments = True
-    elif o in ("-o", "--noofficehours"):
-        skipofficehours = True   
-    elif o in ("-l", "--nolecturecalendar"):
-        skiplecturecalendar = True
-    elif o in ("-k", "--nodeletes"):
-        skipalldeletes = True
+        sys.exit(2)
 
-if USER_ID is None:
-    USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
-if API_KEY is None:
-    API_KEY = input("Enter API Key (get from API_URL + /profile/settings): ")
+    courseid = -1
+    markdownfile = None
+    coursehomepage = None
+    USER_ID = None
+    API_KEY = None
+
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            usage()
+            sys.exit()
+        elif o in ("-c", "--courseid"):
+            courseid = int(a)
+        elif o in ("-m", "--markdown"):
+            markdownfile = a
+        elif o in ("-w", "--webpage"):
+            coursehomepage = a
+        elif o in ("-a", "--apikey"):
+            API_KEY = a
+        elif o in ("-u", "--userid"):
+            USER_ID = a
+        elif o in ("-t", "--timezone"):
+            CANVAS_TIME_ZONE = a
+        elif o in ("-e", "--duetime"):
+            atimes = a.split("|")
+            DUE_TIME_ST = atimes[0]
+            DUE_TIME_DST = atimes[1]
+        elif o in ("-d", "--nodiscussions"):
+            skipdiscussions = True
+        elif o in ("-s", "--noassignments"):
+            skipassignments = True
+        elif o in ("-o", "--noofficehours"):
+            skipofficehours = True   
+        elif o in ("-l", "--nolecturecalendar"):
+            skiplecturecalendar = True
+        elif o in ("-k", "--nodeletes"):
+            skipalldeletes = True
+
+    if USER_ID is None:
+        USER_ID = input("Enter User ID (get from API_URL + /api/v1/users/self): ")
+    if API_KEY is None:
+        API_KEY = input("Enter API Key (get from API_URL + /profile/settings): ")
     
-printlog("Instantiating Canvas...")
-# Instantiate Canvas and Course
-canvas = Canvas(API_URL, API_KEY)
-user = canvas.get_user(USER_ID)
+    printlog("Instantiating Canvas...")
+    # Instantiate Canvas and Course
+    canvas = Canvas(API_URL, API_KEY)
+    user = canvas.get_user(USER_ID)
 
-if courseid == -1:
-    courseid = get_courseid(canvas, user)
-if markdownfile is None:
-    markdownfile = input("Enter path to course syllabus markdown file: ")
-if coursehomepage is None:
-    coursehomepage = input("Enter course website (https://www.yourhomepage.com/course): ")
+    if courseid == -1:
+        courseid = get_courseid(canvas, user)
+    if markdownfile is None:
+        markdownfile = input("Enter path to course syllabus markdown file: ")
+    if coursehomepage is None:
+        coursehomepage = input("Enter course website (https://www.yourhomepage.com/course): ")
     
-course = canvas.get_course(courseid)
+    course = canvas.get_course(courseid)
 
-printlog("Reading Markdown...")
-# Read Course Markdown File
-process_markdown(markdownfile, canvas, course, courseid, coursehomepage)
+    printlog("Reading Markdown...")
+    # Read Course Markdown File
+    process_markdown(markdownfile, canvas, course, courseid, coursehomepage)
 
-printlog("Hiding/Showing Tabs...")
-# Hide Navigation Tabs
-arrange_tabs(course)
+    printlog("Hiding/Showing Tabs...")
+    # Hide Navigation Tabs
+    arrange_tabs(course)
 
-printlog("Finished: Waiting for Child Threads to Terminate")
-# Clean Up
-for t in child_threads:
-        t.join()
+    printlog("Finished: Waiting for Child Threads to Terminate")
+    # Clean Up
+    for t in child_threads:
+            t.join()
