@@ -596,7 +596,7 @@ def add_assignments_to_groups(course, postdict):
             group = quizgroup            
         else:
             if 'grade_breakdown' in postdict:
-                for breakdown in postdict['grade_breakdown']:        
+                for breakdown in (postdict['grade_breakdown'] or []): # the key can be present with no value
                     category = breakdown['category']
                     
                     # remove last s if plural
@@ -847,7 +847,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             add_module_item(module, inputdict)
             
         if 'deliverables' in item:
-            for deliverable in item['deliverables']:        
+            for deliverable in (item['deliverables'] or []): # the key can be present with no value
                 dtitle = deliverable['dtitle']
                 if 'dlink' in deliverable and len(str(deliverable['dlink']).strip()) > 0 and str(deliverable['dlink']).strip().lower() != "false":
                     dlink = deliverable['dlink']
@@ -868,12 +868,15 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     duedate = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
                     duedate = getDateString(adddays(duedate, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
                     
+                    # read the submission types once: the key can be present with no value
+                    submissiontypes = str(deliverable.get('submission_types') or "").lower()
+
                     inputdict = {}
                     inputdict['name'] = description
                     inputdict['submission_types'] = []
-                    if "submission_types" in deliverable and "onpaper" in deliverable['submission_types'].lower():
+                    if "onpaper" in submissiontypes:
                         inputdict['submission_types'].append('on_paper')
-                    elif "submission_types" in deliverable and "noupload" in deliverable['submission_types'].lower():
+                    elif "noupload" in submissiontypes:
                         inputdict['submission_types'].append('online_text_entry')                    
                     else:
                         inputdict['submission_types'].append('online_upload')
@@ -884,7 +887,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                         inputdict['allowed_extensions'].append('gz')
                         inputdict['allowed_extensions'].append('rar')
                         inputdict['allowed_extensions'].append('7z')
-                        if "submission_types" in deliverable and "written" in deliverable['submission_types'].lower():
+                        if "written" in submissiontypes:
                             inputdict['submission_types'].append('online_text_entry')
                             inputdict['allowed_extensions'].append('pdf')
                             inputdict['allowed_extensions'].append('doc')
@@ -1034,7 +1037,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     add_module_item(module, inputdict)  
                     
         if 'readings' in item:
-            for reading in item['readings']:    
+            for reading in (item['readings'] or []): # the key can be present with no value
                 rtitle = reading['rtitle']
                 if 'rlink' in reading and len(str(reading['rlink']).strip()) > 0 and str(reading['rlink']).strip().lower() != "false":
                     rlink = reading['rlink']
@@ -1072,10 +1075,12 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         printlog("Writing Office Hours...")
         
         # Write Office Hours as a Recurring Event
-        for instructor in postdict['instructors']:
+        for instructor in (postdict.get('instructors') or []):
             instructorname = instructor['name']
-            
-            for officehour in instructor['officehours']:     
+
+            # a Writing Fellow, lab assistant, or other staff member may hold no scheduled
+            # drop-in hours at all, so the key can be missing or present with no value
+            for officehour in (instructor.get('officehours') or []):
                 day = officehour['day']
                 daynum = getDayCodeNum(officehour['day'])
                 
@@ -1111,21 +1116,25 @@ def process_markdown(fname, canvas, course, courseid, homepage):
 
     printlog("Writing Exams...")
     
-    # Write Exam Dates 
-    for i in range(len(postdict['info']['class_meets_locations'])):
-        section = postdict['info']['course_sections'][i]['section']       
+    # Write Exam Dates
+    # a course with no exams can omit these keys, and a section can be missing an entry
+    midtermexams = postdict['info'].get('midtermexam') or []
+    finalexams = postdict['info'].get('finalexam') or []
 
-        if not (postdict['info']['midtermexam'][i]['mdate'] == "TBD"):
-            startd = getDateString(parseDate(postdict['info']['midtermexam'][i]['mdate']))
+    for i in range(len(postdict['info']['class_meets_locations'])):
+        section = postdict['info']['course_sections'][i]['section']
+
+        if i < len(midtermexams) and not (midtermexams[i]['mdate'] == "TBD"):
+            startd = getDateString(parseDate(midtermexams[i]['mdate']))
             startd = startd + "T"
-            startd = startd + getTimeString(parseTime(postdict['info']['midtermexam'][i]['mstarttime'])) # leave in local time
-            
-            endd = getDateString(parseDate(postdict['info']['midtermexam'][i]['mdate']))
+            startd = startd + getTimeString(parseTime(midtermexams[i]['mstarttime'])) # leave in local time
+
+            endd = getDateString(parseDate(midtermexams[i]['mdate']))
             endd = endd + "T"
-            endd = endd + getTimeString(parseTime(postdict['info']['midtermexam'][i]['mendtime'])) # leave in local time
-            
+            endd = endd + getTimeString(parseTime(midtermexams[i]['mendtime'])) # leave in local time
+
             dtitle = "Midterm Exam"
-            location = postdict['info']['midtermexam'][i]['mroom']
+            location = midtermexams[i].get('mroom') or ""
             
             # Write the exam:
             if not skiplecturecalendar:
@@ -1141,17 +1150,17 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 
                 create_calendar_event(canvas, inputdict)  
 
-        if not (postdict['info']['finalexam'][i]['fdate'] == "TBD"):
-            startd = getDateString(parseDate(postdict['info']['finalexam'][i]['fdate']))
+        if i < len(finalexams) and not (finalexams[i]['fdate'] == "TBD"):
+            startd = getDateString(parseDate(finalexams[i]['fdate']))
             startd = startd + "T"
-            startd = startd + getTimeString(parseTime(postdict['info']['finalexam'][i]['fstarttime'])) # leave in local time, timezone info given above assuming Eastern Time
-            
-            endd = getDateString(parseDate(postdict['info']['finalexam'][i]['fdate']))
+            startd = startd + getTimeString(parseTime(finalexams[i]['fstarttime'])) # leave in local time, timezone info given above assuming Eastern Time
+
+            endd = getDateString(parseDate(finalexams[i]['fdate']))
             endd = endd + "T"
-            endd = endd + getTimeString(parseTime(postdict['info']['finalexam'][i]['fendtime'])) # leave in local time, timezone info given above assuming Eastern Time
-            
+            endd = endd + getTimeString(parseTime(finalexams[i]['fendtime'])) # leave in local time, timezone info given above assuming Eastern Time
+
             dtitle = "Final Exam"
-            location = postdict['info']['finalexam'][i]['froom']
+            location = finalexams[i].get('froom') or ""
             
             # Write the exam:
             if not skiplecturecalendar:
@@ -1170,9 +1179,9 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     printlog("Creating Assignment Groups...")
     
     # Write Out Assignment Groups   
-    if 'grade_breakdown' in postdict:        
-        for breakdown in postdict['grade_breakdown']:
-            inputdict = {} 
+    if 'grade_breakdown' in postdict:
+        for breakdown in (postdict['grade_breakdown'] or []): # the key can be present with no value
+            inputdict = {}
             
             inputdict['name'] = breakdown['category']
             inputdict['group_weight'] = float(rchop(breakdown['weight'], '%'))
