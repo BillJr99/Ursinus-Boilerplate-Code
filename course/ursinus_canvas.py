@@ -830,11 +830,14 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             title = item['title']
         else:
             title = "N/A"
-        if 'link' in item:
+        # an absent or empty link is fine and reads as no link at all, the same test the
+        # deliverable links below already use
+        if 'link' in item and len(str(item['link']).strip()) > 0 and str(item['link']).strip().lower() != "false":
             link = item['link']
         else:
             link = ""
-   
+
+
         startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
         coursedt = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
         coursedtstr = coursedt.strftime('%a, %b %d, %Y')
@@ -900,7 +903,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         scheduleitems = scheduleitems + 1
         
         # Create a Module Entry for Class Notes Link
-        if 'link' in item:
+        if link:
             inputdict = {}
             inputdict['title'] = "Activity: " + title
             inputdict['type'] = "ExternalUrl"
