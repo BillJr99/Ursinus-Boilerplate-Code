@@ -670,7 +670,6 @@ def add_assignments_to_groups(course, postdict):
                             printlog("Grouping " + name + " under " + category + " by its leading text \"" + categorylookup + "\": the full category name does not appear in the assignment name")
                             break
 
-
         if not (group is None):
             pos = getposidxandinc(posidx, group)
             groupid = group.id
@@ -836,7 +835,6 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             link = item['link']
         else:
             link = ""
-
 
         startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
         coursedt = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
