@@ -487,8 +487,18 @@ def getDayNum(dayidx, M, T, W, R, F, S, U):
 
     return result
     
-def getTimeString(t):   
-    return t.strftime('%H%M%S')    
+def getSectionName(coursesections, i):
+    # course_sections is expected to line up with class_meets_locations; if it is short, say so
+    # and carry on unnamed rather than failing the whole deploy over a label
+    if i < len(coursesections):
+        return stripnobool(coursesections[i].get('section') or "")
+
+    printlog("Warning: course_sections has no entry " + str(i + 1) + " to match class_meets_locations; writing this section's events without a section name")
+
+    return ""
+
+def getTimeString(t):
+    return t.strftime('%H%M%S')
     
 def parseDate(dt, fmt='%Y/%m/%d'):
     return datetime.strptime(dt, fmt)
@@ -716,7 +726,11 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     coursenum = postdict['info']['course_number']
     coursename = postdict['info']['course_title']
     startdate = postdict['info']['course_start_date']
-    enddate = postdict['info']['course_end_date']   
+    enddate = postdict['info']['course_end_date']
+
+    # the last day the class actually meets, before the due date offset below: recurring events
+    # have to count weeks against this, or a term ending on a Sunday picks up an extra week
+    lastclassdate = enddate
 
     # offset the course end date by the same amount as assignments so that assignments can be due just past midnight if the grace period allows it; preserve the date string format so we can manipulate it consistently later
     enddate = getDateString(adddays(parseDate(enddate), DUE_DATE_OFFSET), fmt='%Y/%m/%d')
@@ -783,8 +797,11 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     asmtidx = 1 # assignment index position as well
     
     # Write the lecture schedule as a recurring event
+    coursesections = postdict['info'].get('course_sections') or []
+
     for i in range(len(postdict['info']['class_meets_locations'])):
-        section = postdict['info']['course_sections'][i]['section']
+        section = getSectionName(coursesections, i)
+
         for meeting in postdict['info']['class_meets_locations'][i]['section']:
             day = meeting['day']
             daynum = getDayCodeNum(meeting['day'])
@@ -800,8 +817,12 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             dtend = dtend + "T"
             dtend = dtend + getTimeString(parseTime(meeting['endtime'])) # leave in local time
 
-            location = meeting['place']
-            summary = coursenum + " " + coursename + " Section " + section + " Class Meeting"
+            location = meeting.get('place') or ""
+
+            if len(section) > 0:
+                summary = coursenum + " " + coursename + " Section " + section + " Class Meeting"
+            else:
+                summary = coursenum + " " + coursename + " Class Meeting"
 
             # Write lecture schedule events
             if not skiplecturecalendar:
@@ -809,14 +830,14 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = summary.strip()
                 inputdict['description'] = summary.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = dtstart
                 inputdict['end_at'] = dtend            
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 inputdict['duplicate'] = {}
                 inputdict['duplicate']['frequency'] = "weekly"
-                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(enddate))
+                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(lastclassdate))
             
                 create_calendar_event(canvas, inputdict)
 
@@ -1159,7 +1180,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 dtend = dtend + "T"
                 dtend = dtend + getTimeString(parseTime(officehour['endtime'])) # leave in local time
 
-                location = officehour['location']
+                location = officehour.get('location') or ""
                 
                 summary = coursenum + " " + coursename + " Drop-In / Office Hours with " + instructorname
                 
@@ -1167,14 +1188,14 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = summary.strip()
                 inputdict['description'] = summary.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = dtstart
                 inputdict['end_at'] = dtend
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
                 inputdict['all_day'] = False
                 inputdict['duplicate'] = {}
                 inputdict['duplicate']['frequency'] = "weekly"
-                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(enddate))
+                inputdict['duplicate']['count'] = countWeeks(parseDate(startdate), parseDate(lastclassdate))
                 
                 create_calendar_event(canvas, inputdict)  
 
@@ -1186,7 +1207,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     finalexams = postdict['info'].get('finalexam') or []
 
     for i in range(len(postdict['info']['class_meets_locations'])):
-        section = postdict['info']['course_sections'][i]['section']
+        section = getSectionName(coursesections, i)
 
         if i < len(midtermexams) and not (midtermexams[i]['mdate'] == "TBD"):
             startd = getDateString(parseDate(midtermexams[i]['mdate']))
@@ -1206,7 +1227,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = startd
                 inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
@@ -1232,7 +1253,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['context_code'] = coursecontext
                 inputdict['title'] = dtitle.strip()
                 inputdict['description'] = dtitle.strip()
-                inputdict['location_name'] = location.strip()
+                inputdict['location_name'] = stripnobool(location)
                 inputdict['start_at'] = startd
                 inputdict['end_at'] = endd
                 inputdict['time_zone_edited'] = CANVAS_TIME_ZONE 
@@ -1320,6 +1341,7 @@ if __name__ == "__main__":
             USER_ID = a
         elif o in ("-t", "--timezone"):
             CANVAS_TIME_ZONE = a
+            LOCALTIME = pytz.timezone(CANVAS_TIME_ZONE) # or get_local_time keeps deciding DST in the default zone
         elif o in ("-e", "--duetime"):
             atimes = a.split("|")
             DUE_TIME_ST = atimes[0]
