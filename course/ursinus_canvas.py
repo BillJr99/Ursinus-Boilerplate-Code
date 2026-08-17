@@ -412,7 +412,15 @@ def countWeeks(d1, d2):
     # https://stackoverflow.com/questions/14191832/how-to-calculate-difference-between-two-dates-in-weeks-in-python
     monday1 = (d1 - timedelta(days=d1.weekday()))
     monday2 = (d2 - timedelta(days=d2.weekday()))
-    return (monday2 - monday1).days / 7
+
+    # Canvas wants an integer count of recurrences.  Snapping both ends back to Monday above
+    # already divides evenly and already gives a term that ends mid-week its final week of
+    # meetings, so this rounds up rather than truncating only to keep that choice if the snap
+    # ever changes: one extra event past the end of term is cheaper than a missing class
+    # meeting.  Do not simplify to int(), which would silently pick truncation instead
+    weeks = -(-(monday2 - monday1).days // 7) # ceiling division
+
+    return max(0, min(weeks, 200)) # Canvas rejects a negative count, and caps duplicates at 200
 
 def getDayCodeNum(daycode):
     if daycode == 'M':
