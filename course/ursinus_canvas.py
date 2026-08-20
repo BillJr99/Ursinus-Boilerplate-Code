@@ -36,6 +36,40 @@ DUE_TIME_ST = "T045959Z"
 DUE_DATE_OFFSET = 1 # add 1 day to make things due the next morning per the due time above if GMT is after midnight
 DUE_DATE_FORMAT = "%Y%m%dT%H%M%SZ"
 
+# Schedule items (deliverables and readings) may carry a "module:" key that
+# moves their Canvas module ITEM into one of these standing modules, placed
+# above the first class day. The item still keeps its own due date and its
+# place on the syllabus web page - only the Canvas module placement changes.
+MODULE_TAG_RESOURCE = "resource"
+MODULE_TAG_OVERARCHING = "overarching"
+MODULE_NAME_RESOURCE = "Resources"
+MODULE_NAME_OVERARCHING = "Overarching Class Participation Activities"
+
+def get_module_tag(entry):
+    """Return the normalized module tag for a deliverable/reading, or None."""
+    tag = str((entry or {}).get('module') or "").strip().lower()
+    if tag in ("resource", "resources"):
+        return MODULE_TAG_RESOURCE
+    if tag in ("overarching", "participation", "overarching participation"):
+        return MODULE_TAG_OVERARCHING
+    if tag:
+        print("Warning: unknown module tag '%s' - leaving the item on its own day" % tag)
+    return None
+
+def get_item_date(item, startdate, M, T, W, R, F, S, U):
+    """The date a schedule entry falls on.
+
+    A "cdate:" key (YYYY/MM/DD) pins the entry to a specific calendar date -
+    for a session that does not sit on the normal week/day meeting grid, such
+    as a Friday convocation. Otherwise the date is computed from week/date as
+    usual. Unlike "reschedule:", which only relabels the entry, cdate drives
+    the module name, the deliverable due dates, and the calendar events.
+    """
+    cdate = str(item.get('cdate') or "").strip()
+    if cdate:
+        return parseDate(cdate)
+    return getCourseDate(startdate, item['week'], item.get('date', 0), M, T, W, R, F, S, U, tostring=False)
+
 TABS_TO_HIDE = ["Outcomes", "Collaborations", "Files", "Pages", "Conferences", "BigBlueButton", "Chat", "New Analytics", "Panopto Video", "Zoom"] # which navigation pane items to hide if they are visible
 TABS_TO_SHOW = ["Assignments", "Discussions", "Grades", "People", "Syllabus", "Modules", "Grizzly Gateway", "SPTQ", "Attendance", "Rubrics", "Quizzes", "Announcements" ] # which navigation pane items to force show if they are already hidden
 
@@ -795,6 +829,29 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     
     moduleidx = 1 # module positions are 1-indexed
     asmtidx = 1 # assignment index position as well
+
+    # Standing modules for tagged items, positioned above the first class day.
+    # They are only created when something will actually go in them.
+    tagged_modules = {}
+    wants_resources = any(k in postdict['info'] for k in
+        ('course_homepage', 'class_notebook', 'teamshelproom', 'chatlink', 'issspecifictutoring'))
+    wants_overarching = False
+    for scanitem in postdict['schedule']:
+        for entry in list(scanitem.get('deliverables') or []) + list(scanitem.get('readings') or []):
+            tag = get_module_tag(entry)
+            if tag == MODULE_TAG_RESOURCE:
+                wants_resources = True
+            elif tag == MODULE_TAG_OVERARCHING:
+                wants_overarching = True
+
+    for tag, name, wanted in ((MODULE_TAG_RESOURCE, MODULE_NAME_RESOURCE, wants_resources),
+                              (MODULE_TAG_OVERARCHING, MODULE_NAME_OVERARCHING, wants_overarching)):
+        if wanted:
+            inputdict = {}
+            inputdict['name'] = name
+            inputdict['published'] = True
+            tagged_modules[tag] = create_module(course, inputdict, moduleidx)
+            moduleidx = moduleidx + 1
     
     # Write the lecture schedule as a recurring event
     coursesections = postdict['info'].get('course_sections') or []
@@ -841,11 +898,29 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             
                 create_calendar_event(canvas, inputdict)
 
+    # The standing course links are resources, not first-day business, so they
+    # live in the Resources module rather than being injected into day one.
+    if MODULE_TAG_RESOURCE in tagged_modules:
+        for infokey, itemtitle in (
+                ('course_homepage', "Course Homepage"),
+                ('class_notebook', "Access the Class Notebook"),
+                ('teamshelproom', "Access the Class Teams Help Room Channel"),
+                ('chatlink', "Access the Class Group Chat"),
+                ('issspecifictutoring', "ISS Group Tutoring and Individual Tutoring Sign-Up")):
+            if infokey in postdict['info']:
+                inputdict = {}
+                inputdict['title'] = itemtitle
+                inputdict['type'] = "ExternalUrl"
+                inputdict['external_url'] = postdict['info'][infokey]
+                inputdict['new_tab'] = True
+                inputdict['published'] = True
+                add_module_item(tagged_modules[MODULE_TAG_RESOURCE], inputdict)
+
     printlog("Writing Assignments...")
     scheduleitems = 0
     for item in postdict['schedule']:   
-        weekidx = item['week']
-        dayidx = item['date']
+        weekidx = item.get('week', 0)
+        dayidx = item.get('date', 0)
         if 'title' in item:
             title = item['title']
         else:
@@ -857,13 +932,17 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         else:
             link = ""
 
-        startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
-        coursedt = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
+        coursedt = get_item_date(item, startdate, isM, isT, isW, isR, isF, isS, isU)
+        startd = getDateString(coursedt)
         coursedtstr = coursedt.strftime('%a, %b %d, %Y')
         if 'reschedule' in item:
             coursedtstr = item['reschedule']
         
-        weekdayidx = "(Week " + str(int(weekidx)+1) + " Day " + str(int(dayidx)+1) + ")"
+        if 'cdate' in item and str(item['cdate']).strip():
+            # a custom-dated session is off the meeting grid, so a day index would lie
+            weekdayidx = "(Week " + str(int(weekidx)+1) + ")"
+        else:
+            weekdayidx = "(Week " + str(int(weekidx)+1) + " Day " + str(int(dayidx)+1) + ")"
         
         # Create a module for this entry
         inputdict = {}
@@ -871,53 +950,6 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         inputdict['published'] = True
         module = create_module(course, inputdict, moduleidx)
         moduleidx = moduleidx + 1 # for positioning
-        
-        # Add course resources to first day entry
-        if scheduleitems == 0:
-            if 'course_homepage' in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = "Course Homepage"
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info']['course_homepage']
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(module, inputdict) 
-                
-            if 'class_notebook' in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = "Access the Class Notebook"
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info']['class_notebook']
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(module, inputdict)
-                
-            if 'teamshelproom' in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = "Access the Class Teams Help Room Channel"
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info']['teamshelproom']
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(module, inputdict)                
-                
-            if 'chatlink' in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = "Access the Class Group Chat"
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info']['chatlink']
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(module, inputdict) 
-
-            if 'issspecifictutoring' in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = "ISS Group Tutoring and Individual Tutoring Sign-Up"
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info']['issspecifictutoring']
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(module, inputdict)                
         
         scheduleitems = scheduleitems + 1
         
@@ -950,8 +982,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 if (not (' handed out' in description.lower()) and not ('quiz:' in description.lower())):
                     description = rchop(description, " Due")
                     
-                    duedate = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
-                    duedate = getDateString(adddays(duedate, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
+                    duedate = getDateString(adddays(coursedt, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
                     
                     # read the submission types once: the key can be present with no value
                     submissiontypes = str(deliverable.get('submission_types') or "").lower()
@@ -1090,8 +1121,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     quiz_name = lchop(description, "Quiz: ")
                     quiz = find_quiz_by_title(course, quiz_name)
                     if not (quiz is None):
-                        duedate = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU, tostring=False)
-                        duedate = adddays(duedate, DUE_DATE_OFFSET) # offset the due date as needed for the due time which is in UTC
+                        duedate = adddays(coursedt, DUE_DATE_OFFSET) # offset the due date as needed for the due time which is in UTC
                         opendate = adddays(duedate, -2) # unlock the quiz 2 days before
                         duedate = getDateString(duedate)
                         opendate = getDateString(opendate)
@@ -1109,7 +1139,9 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     else:
                         print("Warning: quiz " + quiz_name + " not found.")
                 else:
-                    # Create a Module Entry for the Deliverable
+                    # Create a Module Entry for the Deliverable.
+                    # A tagged deliverable keeps its assignment, points, and due date
+                    # above; only the module item moves to the standing module.
                     inputdict = {}
                     inputdict['title'] = dtitle
                     if dlink is None:
@@ -1119,7 +1151,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                         inputdict['external_url'] = makelink(addslash(homepage), stripnobool(dlink))
                         inputdict['new_tab'] = True            
                     inputdict['published'] = True
-                    add_module_item(module, inputdict)  
+                    add_module_item(tagged_modules.get(get_module_tag(deliverable), module), inputdict)  
                     
         if 'readings' in item:
             for reading in (item['readings'] or []): # the key can be present with no value
@@ -1129,7 +1161,9 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 else:
                     rlink = None  
                 
-                # Create a Module Entry for the Reading Activity
+                # Create a Module Entry for the Reading Activity.
+                # A tagged reading keeps its place on the syllabus page; only the
+                # Canvas module item moves to the standing module.
                 inputdict = {}
                 inputdict['title'] = rtitle
                 inputdict['published'] = True
@@ -1140,7 +1174,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     inputdict['external_url'] = makelink(addslash(homepage), stripnobool(rlink))
                     inputdict['new_tab'] = True            
                 
-                add_module_item(module, inputdict) 
+                add_module_item(tagged_modules.get(get_module_tag(reading), module), inputdict) 
 
     printlog("Omitting attendance grade...")
     omit_attendance_grade(course)                

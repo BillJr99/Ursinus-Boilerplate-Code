@@ -169,8 +169,8 @@ isU = postdict['info']['class_meets_days']['isU']
 message = ''
 
 for item in postdict['schedule']:   
-    weekidx = item['week']
-    dayidx = item['date']
+    weekidx = item.get('week', 0)
+    dayidx = item.get('date', 0)
     if 'title' in item:
         title = item['title']
     else:
@@ -180,7 +180,12 @@ for item in postdict['schedule']:
     else:
         link = ""
          
-    startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
+    # A "cdate:" key (YYYY/MM/DD) pins this entry to a specific calendar date,
+    # for a session that does not sit on the normal week/day meeting grid.
+    if str(item.get('cdate') or "").strip():
+        startd = getDateString(parseDate(str(item['cdate']).strip()))
+    else:
+        startd = getCourseDate(startdate, weekidx, dayidx, isM, isT, isW, isR, isF, isS, isU)
     description = stripnobool(link)
         
     if 'deliverables' in item:
