@@ -16,6 +16,8 @@ from urllib import request, parse
 import requests
 import json
 import pytz
+import yaml
+import os
 
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/course.py
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/canvas.py
@@ -147,6 +149,53 @@ def stripnobool(val):
         result = str(val)
     
     return result.strip()
+
+def load_site_config(syllabus_path=None):
+    """Parse the site's _config.yml; return {} when it is absent or unreadable."""
+    candidates = ["_config.yml"]
+    if syllabus_path:
+        # syllabus.md normally lives in _pages/, so the config sits one level up
+        parent = os.path.dirname(os.path.dirname(os.path.abspath(syllabus_path)))
+        candidates.append(os.path.join(parent, "_config.yml"))
+
+    for candidate in candidates:
+        try:
+            with open(candidate, encoding="utf-8") as cf:
+                return yaml.safe_load(cf) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+
+    return {}
+
+def get_lia_base(cfg):
+    """LiaScript render prefix, or None when this course has not opted in."""
+    viewer = cfg.get('lia_viewer_url')
+    pages = cfg.get('raw_pages_url')
+
+    if viewer and pages:
+        return stripnobool(viewer) + stripnobool(pages)
+
+    return None
+
+def is_liapage(entry):
+    """True for `liapage: true`. stripnobool() blanks booleans on purpose, so the
+    YAML boolean has to be read before any string coercion."""
+    val = entry.get('liapage', False)
+
+    if isinstance(val, bool):
+        return val
+
+    return str(val).strip().lower() == "true"
+
+def lia_resolve(entry, url, lia_base):
+    """Expand a liapage entry into its LiaScript render URL; leave every other link alone.
+
+    The result is absolute, so the makelink() call downstream passes it through
+    untouched rather than prepending the course homepage to it."""
+    if lia_base and is_liapage(entry):
+        return lia_base + stripnobool(url)
+
+    return url
 
 def dodelete(item, dosleep=True):
     repeat = True
@@ -761,6 +810,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     coursename = postdict['info']['course_title']
     startdate = postdict['info']['course_start_date']
     enddate = postdict['info']['course_end_date']
+    lia_base = get_lia_base(load_site_config(fname))
 
     # the last day the class actually meets, before the due date offset below: recurring events
     # have to count weeks against this, or a term ending on a Sunday picks up an extra week
@@ -928,7 +978,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
         # an absent or empty link is fine and reads as no link at all, the same test the
         # deliverable links below already use
         if 'link' in item and len(str(item['link']).strip()) > 0 and str(item['link']).strip().lower() != "false":
-            link = item['link']
+            link = lia_resolve(item, item['link'], lia_base)
         else:
             link = ""
 
@@ -967,7 +1017,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             for deliverable in (item['deliverables'] or []): # the key can be present with no value
                 dtitle = deliverable['dtitle']
                 if 'dlink' in deliverable and len(str(deliverable['dlink']).strip()) > 0 and str(deliverable['dlink']).strip().lower() != "false":
-                    dlink = deliverable['dlink']
+                    dlink = lia_resolve(deliverable, deliverable['dlink'], lia_base)
                 else:
                     dlink = None
                     
@@ -1157,7 +1207,7 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             for reading in (item['readings'] or []): # the key can be present with no value
                 rtitle = reading['rtitle']
                 if 'rlink' in reading and len(str(reading['rlink']).strip()) > 0 and str(reading['rlink']).strip().lower() != "false":
-                    rlink = reading['rlink']
+                    rlink = lia_resolve(reading, reading['rlink'], lia_base)
                 else:
                     rlink = None  
                 
