@@ -24,6 +24,21 @@ Canvas UI. It is deliberately narrow: assignments, assignment groups, modules,
 module items, due dates, and detaching a rubric. It does not create rubrics;
 `canvas_sync_rubrics.py`, beside this file, is that tool.
 
+Two modes
+---------
+**--generate** compares the repository you are standing in against a live Canvas
+shell and writes a change document to stdout. Run it from the repo root; it reads
+`_pages/syllabus.md` (or --markdown) and reports every assignment whose due date,
+points, or page link has drifted from the shell, plus assignments the syllabus
+does not account for. Nothing is written to Canvas in this mode.
+
+    python code/course/ursinus_canvas_inline_changes.py --generate -c 12345 > changes.yaml
+    python code/course/ursinus_canvas_inline_changes.py --generate -c 12345 \
+        | python code/course/ursinus_canvas_inline_changes.py -c 12345 --apply
+
+Without --generate the script *applies* a change document, which it reads from
+stdin unless --file names one.
+
 Input
 -----
 The change document arrives on stdin (or via --file). Any of these parse:
@@ -99,8 +114,19 @@ submissions exist and refuses to run if there are any, unless you pass
 --allow-delete-with-submissions. Deleting a Canvas assignment deletes its
 submissions and grades with it, and no flag brings them back.
 
+What --generate compares
+------------------------
+Assignments only: due date, points, and the page link in the description, plus a
+commented-out delete for anything in Canvas the syllabus does not name. Modules
+and module items are not diffed, because reconciling them safely means deciding
+what a reordered module means for released content; `rebuild_all_modules` in
+`ursinus_canvas_update_schedule_inplace.py` is the tool that takes that on. Every
+delete it emits is commented out and annotated with its submission count, so a
+generated document can never destroy student work by being piped straight back in.
+
 Requires `canvasapi`. PyYAML is used when present; without it, JSON and
-dict-style input still parse.
+dict-style input still parse. --generate additionally needs `python-frontmatter`,
+`python-dateutil`, and `pytz`, which the sibling schedule script already requires.
 """
 
 import argparse
@@ -229,6 +255,11 @@ def parse_document(text):
     else:
         die("expected a mapping or a list, got %s" % type(doc).__name__)
 
+    if isinstance(changes, list) and not changes:
+        # `changes: []` is what --generate emits when nothing has drifted. Piping
+        # that straight back in should be a clean no-op, not an error.
+        print("The change document contains no operations; nothing to do.")
+        sys.exit(0)
     if not changes:
         die("the change document contains no operations")
 
@@ -796,8 +827,207 @@ def plan_operation(canvas, change):
 
 
 # --------------------------------------------------------------------------
+# --generate: compare the repository to the live shell
+# --------------------------------------------------------------------------
+
+DEFAULT_SYLLABUS = os.path.join("_pages", "syllabus.md")
+
+
+def addslash(text):
+    return text if text.endswith("/") else text + "/"
+
+
+def meeting_dates(markdown_path):
+    """(week, ordinal) -> calendar date, from the sibling schedule script.
+
+    That script already knows how to walk the meeting pattern around holidays,
+    and re-deriving it here is how the two would drift apart.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        import ursinus_canvas_update_schedule_inplace as schedule
+    except ImportError as exc:
+        die("--generate needs ursinus_canvas_update_schedule_inplace.py beside this "
+            "script, and its dependencies: %s" % exc)
+
+    with open(markdown_path, "r", encoding="utf-8") as fh:
+        frontmatter_dict, _ = schedule._split_frontmatter(fh.read())
+    plan = schedule._extract_plan(frontmatter_dict)
+    return ({(m.week, m.ordinal_in_week): m.date for m in plan.meetings},
+            frontmatter_dict)
+
+
+def syllabus_expectations(markdown_path):
+    """What the repository says every Canvas assignment should look like.
+
+    Names follow ursinus_canvas.py: strip a trailing " Due", skip "Handed Out"
+    rows and quizzes. Those are the names that created the shell, so they are the
+    names that have to match it.
+    """
+    meetings, doc = meeting_dates(markdown_path)
+    info = doc.get("info") or {}
+    homepage = addslash(str(info.get("course_homepage") or ""))
+
+    expected = {}
+    for item in doc.get("schedule", []) or []:
+        try:
+            week, ordinal = int(item.get("week")), int(item.get("date"))
+        except (TypeError, ValueError):
+            continue
+        day = meetings.get((week, ordinal))
+        for deliverable in item.get("deliverables", []) or []:
+            dtitle = (deliverable.get("dtitle") or "").strip()
+            if not dtitle:
+                continue
+            name = rchop(dtitle, " Due")
+            lowered = name.lower()
+            if " handed out" in lowered or "quiz:" in lowered:
+                continue
+            dlink = deliverable.get("dlink")
+            expected[name] = {
+                "name": name,
+                "points": float(deliverable.get("points", 100)),
+                "day": day,
+                "url": (homepage + str(dlink)) if dlink and homepage else None,
+            }
+    return expected, info
+
+
+def yaml_quote(value):
+    if value is None:
+        return "null"
+    text = str(value)
+    return '"%s"' % text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def generate(canvas, markdown_path):
+    """Emit a change document describing repo-vs-Canvas drift."""
+    if not os.path.exists(markdown_path):
+        die("no syllabus at %s (run this from the repository root, or pass --markdown)"
+            % markdown_path)
+
+    expected, _ = syllabus_expectations(markdown_path)
+    if not expected:
+        die("no deliverables found in %s" % markdown_path)
+
+    live = {}
+    for assignment in canvas.assignments():
+        live[(assignment.name or "").strip()] = assignment
+
+    out, counts = [], {"create": 0, "due": 0, "points": 0, "url": 0, "orphan": 0}
+
+    for name in sorted(expected):
+        want = expected[name]
+        want_due = canvas_due(want["day"].strftime("%Y-%m-%d")) if want["day"] else None
+        assignment = live.get(name)
+
+        if assignment is None:
+            counts["create"] += 1
+            out.append("  - op: assignment.create")
+            out.append("    name: %s" % yaml_quote(name))
+            out.append("    points: %g" % want["points"])
+            if want["day"]:
+                out.append("    due: %s" % want["day"].strftime("%Y-%m-%d"))
+            if want["url"]:
+                out.append("    url: %s" % yaml_quote(want["url"]))
+            out.append("    published: true")
+            out.append("")
+            continue
+
+        have_due = getattr(assignment, "due_at", None)
+        if want_due and (have_due or "").replace(".000Z", "Z") != want_due:
+            counts["due"] += 1
+            out.append("  - op: assignment.due")
+            out.append("    name: %s" % yaml_quote(name))
+            out.append("    due: %s   # Canvas has %s"
+                       % (want["day"].strftime("%Y-%m-%d"), describe_due(have_due)))
+            out.append("")
+
+        have_points = getattr(assignment, "points_possible", None)
+        if have_points is not None and abs(float(have_points) - want["points"]) > 0.001:
+            counts["points"] += 1
+            out.append("  - op: assignment.update")
+            out.append("    name: %s" % yaml_quote(name))
+            out.append("    points: %g   # Canvas has %g" % (want["points"], float(have_points)))
+            out.append("")
+
+        description = getattr(assignment, "description", None) or ""
+        if want["url"] and want["url"] not in description:
+            counts["url"] += 1
+            out.append("  - op: assignment.update")
+            out.append("    name: %s" % yaml_quote(name))
+            out.append("    url: %s" % yaml_quote(want["url"]))
+            out.append("")
+
+    orphans = sorted(set(live) - set(expected))
+
+    print("# Generated by ursinus_canvas_inline_changes.py --generate")
+    print("# repository: %s" % markdown_path)
+    print("# course:     %s (%s)" % (canvas.course.id, getattr(canvas.course, "name", "?")))
+    print("# drift:      %d to create, %d due date(s), %d points, %d link(s), %d unaccounted"
+          % (counts["create"], counts["due"], counts["points"], counts["url"], len(orphans)))
+    print("#")
+    print("# Assignments only. Modules and module items are not diffed.")
+    print("# Review before applying; this is a description of drift, not a decision.")
+
+    if out:
+        print("changes:")
+        for line in out:
+            print(line)
+    else:
+        print("# No assignment drift: Canvas matches the repository.")
+        print("changes: []")
+
+    if orphans:
+        print("# %d Canvas assignment(s) the syllabus does not name." % len(orphans))
+        print("# Uncomment to delete. Deleting an assignment deletes its submissions")
+        print("# and grades with it, so the submission counts below are the whole story.")
+        for name in orphans:
+            assignment = live[name]
+            count = canvas.submission_count(assignment)
+            label = "unknown" if count is None else "%d" % count
+            print("#   - op: assignment.delete")
+            print("#     name: %s   # %s submission(s)" % (yaml_quote(name), label))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
+
+def connect(args):
+    """Open the course, prompting for whatever was not passed.
+
+    Prompts and progress go to stderr, so `--generate | --apply` works in a pipe.
+    """
+    course_id = args.courseid
+    if course_id is None:
+        try:
+            print("Enter the Canvas course id: ", end="", file=sys.stderr, flush=True)
+            course_id = int(input().strip())
+        except (ValueError, EOFError):
+            die("a numeric course id is required")
+
+    api_key = args.apikey or os.environ.get("CANVAS_API_KEY")
+    if not api_key:
+        try:
+            print("Enter API key (from %sprofile/settings): " % args.api_url,
+                  end="", file=sys.stderr, flush=True)
+            api_key = input().strip()
+        except EOFError:
+            api_key = ""
+    if not api_key:
+        die("an API key is required")
+
+    try:
+        return Canvas(args.api_url, api_key, course_id)
+    except ImportError:
+        die("canvasapi is not installed: pip install canvasapi")
+    except Exception as exc:
+        die("could not open course %s: %s" % (course_id, exc))
+
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
@@ -811,6 +1041,12 @@ def parse_args(argv):
                    help="Canvas API key (prompted if omitted; also $CANVAS_API_KEY)")
     p.add_argument("-f", "--file", default=None,
                    help="read the change document from this file instead of stdin")
+    p.add_argument("-g", "--generate", action="store_true",
+                   help="compare this repository to the live shell and write a change "
+                        "document to stdout instead of applying one")
+    p.add_argument("-m", "--markdown", default=DEFAULT_SYLLABUS,
+                   help="syllabus to compare against under --generate (default: %s, "
+                        "relative to the current directory)" % DEFAULT_SYLLABUS)
     p.add_argument("--api-url", default=DEFAULT_API_URL,
                    help="Canvas base URL (default: %s)" % DEFAULT_API_URL)
     p.add_argument("--apply", action="store_true",
@@ -825,6 +1061,13 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
+    if args.generate and args.file:
+        die("--generate writes a change document; it does not read one. Drop --file.")
+
+    if args.generate:
+        canvas = connect(args)
+        return generate(canvas, args.markdown)
+
     if args.file:
         if not os.path.exists(args.file):
             die("no such file: %s" % args.file)
@@ -832,7 +1075,8 @@ def main(argv=None):
             text = fh.read()
     else:
         if sys.stdin.isatty():
-            die("no change document: pipe one in on stdin, or pass --file")
+            die("no change document: pipe one in on stdin, pass --file, or use "
+                "--generate to write one from this repository")
         text = sys.stdin.read()
 
     changes = parse_document(text)
@@ -850,29 +1094,7 @@ def main(argv=None):
         print("--check: parsed locally; Canvas was not contacted.")
         return 0
 
-    course_id = args.courseid
-    if course_id is None:
-        try:
-            course_id = int(input("Enter the Canvas course id: ").strip())
-        except (ValueError, EOFError):
-            die("a numeric course id is required")
-
-    api_key = args.apikey or os.environ.get("CANVAS_API_KEY")
-    if not api_key:
-        try:
-            api_key = input("Enter API key (from %sprofile/settings): " % args.api_url).strip()
-        except EOFError:
-            api_key = ""
-    if not api_key:
-        die("an API key is required")
-
-    try:
-        canvas = Canvas(args.api_url, api_key, course_id)
-    except ImportError:
-        die("canvasapi is not installed: pip install canvasapi")
-    except Exception as exc:
-        die("could not open course %s: %s" % (course_id, exc))
-
+    canvas = connect(args)
     print("Course %s: %s\n" % (canvas.course.id, getattr(canvas.course, "name", "?")))
 
     # Resolve everything before writing anything.
