@@ -4,6 +4,7 @@ from datetime import datetime,timedelta
 import uuid
 from dateutil import tz
 import os
+import yaml
 
 uidseed = -1
 
@@ -33,7 +34,59 @@ def stripnobool(val):
         result = str(val)
     
     return result.strip()
-    
+
+def load_site_config(syllabus_path=None):
+    """Parse the site's _config.yml; return {} when it is absent or unreadable."""
+    candidates = ["_config.yml"]
+    if syllabus_path:
+        # syllabus.md normally lives in _pages/, so the config sits one level up
+        parent = os.path.dirname(os.path.dirname(os.path.abspath(syllabus_path)))
+        candidates.append(os.path.join(parent, "_config.yml"))
+
+    for candidate in candidates:
+        try:
+            with open(candidate, encoding="utf-8") as cf:
+                return yaml.safe_load(cf) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+
+    return {}
+
+def get_lia_base(cfg):
+    """LiaScript render prefix, or None when this course has not opted in."""
+    viewer = cfg.get('lia_viewer_url')
+    pages = cfg.get('raw_pages_url')
+
+    if viewer and pages:
+        return stripnobool(viewer) + stripnobool(pages)
+
+    return None
+
+def is_liapage(entry):
+    """True for `liapage: true`. stripnobool() blanks booleans on purpose, so the
+    YAML boolean has to be read before any string coercion."""
+    val = entry.get('liapage', False)
+
+    if isinstance(val, bool):
+        return val
+
+    return str(val).strip().lower() == "true"
+
+def resolve_link(entry, url, homepage, lia_base):
+    """A liapage entry renders through LiaScript; anything else keeps its old handling."""
+    url = stripnobool(url)
+
+    if not url:
+        return ""
+
+    if lia_base and is_liapage(entry):
+        return lia_base + url
+
+    if not url.startswith("http"):
+        return rchop(homepage, '/') + '/' + url
+
+    return url
+
 def getDayNum(dayidx, M, T, W, R, F, S, U):
     result = 0
     
@@ -196,6 +249,7 @@ coursename = postdict['info']['course_title']
 startdate = postdict['info']['course_start_date']
 enddate = postdict['info']['course_end_date']
 homepage = postdict['info']['course_homepage']
+lia_base = get_lia_base(load_site_config(fname))
 isM = postdict['info']['class_meets_days']['isM']
 isT = postdict['info']['class_meets_days']['isT']
 isW = postdict['info']['class_meets_days']['isW']
@@ -279,10 +333,7 @@ for item in postdict['schedule']:
     else:
         title = "N/A"
     if 'link' in item:
-        link = item['link']
-        
-        if not link.startswith("http"): 
-            link = rchop(homepage, '/') + '/' + stripnobool(link)
+        link = resolve_link(item, item['link'], homepage, lia_base)
     else:
         link = ""
      
@@ -303,11 +354,7 @@ for item in postdict['schedule']:
             else:
                 rlink = ""
                 
-            if rlink:
-                if not rlink.startswith("http"): 
-                    rlink = rchop(homepage, '/') + '/' + stripnobool(rlink)
-            else:
-                rlink = stripnobool(rlink)
+            rlink = resolve_link(reading, rlink, homepage, lia_base)
             
             description = stripnobool(description) + "\\nReading: " + stripnobool(rtitle) + " " + stripnobool(rlink) 
         
@@ -320,11 +367,7 @@ for item in postdict['schedule']:
             else:
                 dlink = ""
             
-            if dlink:
-                if not dlink.startswith("http"): 
-                    dlink = rchop(homepage, '/') + '/' + stripnobool(dlink)
-            else:
-                dlink = stripnobool(dlink)
+            dlink = resolve_link(deliverable, dlink, homepage, lia_base)
             
             description = stripnobool(description) + "\\nDeliverable: " + stripnobool(dtitle) + " " + stripnobool(dlink) 
         
