@@ -378,26 +378,41 @@ class Canvas(object):
     # -- resolution --------------------------------------------------------
 
     @staticmethod
-    def _resolve(items, needle, label):
+    def _label(item):
+        """What this object is called.
+
+        Assignments, groups, and modules carry "name"; a canvasapi ModuleItem
+        carries "title" and no "name" at all, so reading .name directly here
+        raised AttributeError on every item.remove and item.move.
+        """
+        for attr in ("name", "title"):
+            value = getattr(item, attr, None)
+            if value is not None:
+                return str(value)
+        return ""
+
+    @classmethod
+    def _resolve(cls, items, needle, label):
         """Exact name, then case-insensitive, then a unique substring."""
         needle = str(needle).strip()
-        exact = [i for i in items if (i.name or "").strip() == needle]
+        exact = [i for i in items if cls._label(i).strip() == needle]
         if len(exact) == 1:
             return exact[0]
         if len(exact) > 1:
             die("%r matches %d %ss by exact name; pass an id instead"
                 % (needle, len(exact), label))
 
-        lowered = [i for i in items if (i.name or "").strip().lower() == needle.lower()]
+        lowered = [i for i in items if cls._label(i).strip().lower() == needle.lower()]
         if len(lowered) == 1:
             return lowered[0]
 
-        partial = [i for i in items if needle.lower() in (i.name or "").lower()]
+        partial = [i for i in items if needle.lower() in cls._label(i).lower()]
         if len(partial) == 1:
             return partial[0]
         if len(partial) > 1:
             die("%r matches %d %ss:\n  %s\nName one exactly, or pass an id."
-                % (needle, len(partial), label, "\n  ".join(sorted(p.name for p in partial))))
+                % (needle, len(partial), label,
+                   "\n  ".join(sorted(cls._label(p) for p in partial))))
         return None
 
     def find_assignment(self, change):
