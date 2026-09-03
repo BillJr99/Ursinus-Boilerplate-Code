@@ -87,20 +87,12 @@ ATTENDANCE_ASSIGNMENT_NAME = "Roll Call Attendance"
 # group's deletion, and deleting the group would take the row and its recorded attendance with it.
 ATTENDANCE_UNGRADED_GROUP_NAME = "Attendance (Not Counted)"
 
-# The submission_types token table lives in canvas_submission_types.py beside this file, so that
-# ursinus_canvas_inline_changes.py can honor the same contract without importing this module and
-# everything it depends on.  Re-exported here because callers have always read these names off
-# ursinus_canvas.  Running this as "python code/course/ursinus_canvas.py" already puts its own
-# directory first on sys.path, so the plain import is tried first: putting course/ at the front
-# of sys.path unconditionally would shadow any third-party module sharing a name with a script
-# in here (scheduler, attendance_report, and so on) for everything that imports this module.
-try:
-    from canvas_submission_types import (get_submission_spec, EXTENSIONS_WRITTEN,
-                                         EXTENSIONS_ARCHIVE, EXTENSIONS_PRESENTATION)
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    from canvas_submission_types import (get_submission_spec, EXTENSIONS_WRITTEN,
-                                         EXTENSIONS_ARCHIVE, EXTENSIONS_PRESENTATION)
+# Upload extension sets, selected by the tokens in a deliverable's submission_types string.
+# A deliverable naming none of these tokens is left unrestricted, so that any file type can
+# be submitted; see get_submission_spec below.
+EXTENSIONS_WRITTEN = ['pdf', 'doc', 'docx', 'txt']
+EXTENSIONS_ARCHIVE = ['zip', 'bz2', 'tar', 'gz', 'rar', '7z']
+EXTENSIONS_PRESENTATION = ['ppt', 'pptx']
 
 child_threads = []
 
@@ -777,6 +769,60 @@ def find_quiz_by_title(course, quiz_name):
             
     return None # not found
     
+def get_submission_spec(submissiontypes):
+    """Map a deliverable's submission_types string onto Canvas submission types and extensions.
+
+    Returns (submission_types, allowed_extensions), where allowed_extensions is None when no
+    restriction should be sent at all.  The tokens are matched as substrings of one free-text
+    string, so a deliverable may name more than one and their extension sets accumulate:
+    "written presentation" accepts everything either tag allows.
+
+    An unrecognized or empty string yields an unrestricted upload.  That is the deliberate
+    default: a deliverable whose author did not think to tag it should not silently refuse the
+    PDF, image, or notebook a student tries to hand in.
+
+    onpaper       -> on_paper
+    noupload      -> online_text_entry
+    written       -> online_upload + online_text_entry; pdf doc docx txt + the archives
+    presentation  -> online_upload; pdf doc docx txt ppt pptx
+    zip           -> online_upload; zip bz2 tar gz rar 7z
+    (none)        -> online_upload; no extension restriction
+    """
+    submissiontypes = str(submissiontypes or "").lower()
+
+    # These two describe how the work arrives rather than what file it is, so they short-circuit
+    if "onpaper" in submissiontypes:
+        return (['on_paper'], None)
+
+    if "noupload" in submissiontypes:
+        return (['online_text_entry'], None)
+
+    types = ['online_upload']
+    extensions = []
+
+    # Accumulate in a stable order, and let a deliverable name several tags at once
+    if "written" in submissiontypes:
+        types.append('online_text_entry')
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_ARCHIVE
+
+    if "presentation" in submissiontypes:
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_PRESENTATION
+
+    if "zip" in submissiontypes:
+        extensions = extensions + EXTENSIONS_ARCHIVE
+
+    # Preserve first-seen order while dropping the overlap between the sets above
+    deduped = []
+    for extension in extensions:
+        if not (extension in deduped):
+            deduped.append(extension)
+
+    # An empty list would be sent as a restriction allowing nothing, so omit the key entirely
+    if len(deduped) == 0:
+        return (types, None)
+
+    return (types, deduped)
+
 # Create Assignment Shells: https://canvasapi.readthedocs.io/en/stable/examples.html#create-an-assignment
 def find_assignment_by_name(course, assignment_name):
     assignments = course.get_assignments()

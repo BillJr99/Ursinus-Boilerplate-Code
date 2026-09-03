@@ -96,8 +96,8 @@ Submission types
 `submission_types` accepts either vocabulary, and which one it is decides what
 happens:
 
-    submission_types: written                 the syllabus's token, mapped through
-                                              canvas_submission_types.py to
+    submission_types: written                 the syllabus's token, mapped by
+                                              get_submission_spec below to
                                               online_upload + online_text_entry and
                                               pdf doc docx txt plus the archives
     submission_types: ["online_upload"]       Canvas's own names, sent verbatim
@@ -227,9 +227,14 @@ so does anything naming a `rubricpath`, which has to read the assignment page.
 --check needs none of them, except that it can only validate a rubric file when
 `python-frontmatter` is installed, and says so when it cannot.
 
-Two modules beside this one are imported rather than reimplemented:
-`canvas_submission_types.py` for the submission_types tokens, and
-`canvas_sync_rubrics.py` for the rubric payload. Two copies of either would drift.
+`canvas_sync_rubrics.py` beside this file is imported rather than reimplemented,
+so that a rubric written here is identical to one that script writes.
+
+The submission_types token table is the one thing deliberately duplicated:
+`get_submission_spec` below is a copy of `ursinus_canvas.py`'s, kept here so that
+this script needs none of that module's dependencies. Change one and change the
+other, or an assignment created here and one created by a deploy will disagree
+about what a student may upload.
 """
 
 import argparse
@@ -262,6 +267,98 @@ MODULE_NAME_SEPARATOR = " - "
 # relative to the assignment's own name (ursinus_canvas.py writes the raw dtitle, which is the
 # assignment name with this suffix still on it).
 HANDOUT_SUFFIX = " Handed Out"
+
+# ---------------------------------------------------------------------------
+# The submission_types token table.
+#
+# This is a copy of what ursinus_canvas.py holds, kept here rather than imported so that this
+# script stays standalone: importing that module pulls in canvasapi, frontmatter, requests,
+# pytz, and yaml, and --check is documented to run with none of them installed.
+#
+# KEEP THE TWO IN STEP. These tokens are the contract between a deliverable in the syllabus
+# and the Canvas assignment it becomes. If get_submission_spec changes in ursinus_canvas.py,
+# change it here too, or an assignment created by this script and one created by a full deploy
+# will disagree about what a student is allowed to upload.
+# ---------------------------------------------------------------------------
+
+# Upload extension sets, selected by the tokens in a deliverable's submission_types string.
+# A deliverable naming none of these tokens is left unrestricted, so that any file type can
+# be submitted; see get_submission_spec below.
+EXTENSIONS_WRITTEN = ['pdf', 'doc', 'docx', 'txt']
+EXTENSIONS_ARCHIVE = ['zip', 'bz2', 'tar', 'gz', 'rar', '7z']
+EXTENSIONS_PRESENTATION = ['ppt', 'pptx']
+
+# The tokens get_submission_spec recognizes, in the order its docstring lists them. Used to
+# tell a free-text token string apart from a list of Canvas's own submission type names.
+SUBMISSION_TOKENS = ("onpaper", "noupload", "written", "presentation", "zip")
+
+# What Canvas itself calls its submission types. A change document naming one of these directly
+# is speaking Canvas's vocabulary, not the syllabus's, and must not go through the token
+# mapping below.
+CANVAS_SUBMISSION_TYPES = (
+    "online_upload", "online_text_entry", "online_url", "online_quiz",
+    "on_paper", "discussion_topic", "external_tool", "media_recording",
+    "student_annotation", "none", "not_graded",
+)
+
+
+def get_submission_spec(submissiontypes):
+    """Map a deliverable's submission_types string onto Canvas submission types and extensions.
+
+    Returns (submission_types, allowed_extensions), where allowed_extensions is None when no
+    restriction should be sent at all.  The tokens are matched as substrings of one free-text
+    string, so a deliverable may name more than one and their extension sets accumulate:
+    "written presentation" accepts everything either tag allows.
+
+    An unrecognized or empty string yields an unrestricted upload.  That is the deliberate
+    default in ursinus_canvas.py: a deliverable whose author did not think to tag it should not
+    silently refuse the PDF, image, or notebook a student tries to hand in.  This script is
+    stricter about what it will accept before getting here (see resolve_submission_spec), but
+    the mapping itself is identical.
+
+    onpaper       -> on_paper
+    noupload      -> online_text_entry
+    written       -> online_upload + online_text_entry; pdf doc docx txt + the archives
+    presentation  -> online_upload; pdf doc docx txt ppt pptx
+    zip           -> online_upload; zip bz2 tar gz rar 7z
+    (none)        -> online_upload; no extension restriction
+    """
+    submissiontypes = str(submissiontypes or "").lower()
+
+    # These two describe how the work arrives rather than what file it is, so they short-circuit
+    if "onpaper" in submissiontypes:
+        return (['on_paper'], None)
+
+    if "noupload" in submissiontypes:
+        return (['online_text_entry'], None)
+
+    types = ['online_upload']
+    extensions = []
+
+    # Accumulate in a stable order, and let a deliverable name several tags at once
+    if "written" in submissiontypes:
+        types.append('online_text_entry')
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_ARCHIVE
+
+    if "presentation" in submissiontypes:
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_PRESENTATION
+
+    if "zip" in submissiontypes:
+        extensions = extensions + EXTENSIONS_ARCHIVE
+
+    # Preserve first-seen order while dropping the overlap between the sets above
+    deduped = []
+    for extension in extensions:
+        if not (extension in deduped):
+            deduped.append(extension)
+
+    # None rather than [], so that callers omit the key entirely: what an empty list does on
+    # the wire depends on how it is encoded, and "no restriction" has to be expressed by not
+    # asking for one rather than by asking for an empty one
+    if len(deduped) == 0:
+        return (types, None)
+
+    return (types, deduped)
 
 OPS = (
     "assignment.create", "assignment.update", "assignment.due", "assignment.delete",
@@ -333,22 +430,6 @@ def _sibling_path():
     if here not in sys.path:
         sys.path.insert(0, here)
     return here
-
-
-def submission_types_module(required=True):
-    """canvas_submission_types, which owns the syllabus's submission_types tokens.
-
-    It imports nothing, so this stays available under --check with no third-party
-    packages installed at all.
-    """
-    _sibling_path()
-    try:
-        import canvas_submission_types
-        return canvas_submission_types
-    except ImportError as exc:
-        if required:
-            die("canvas_submission_types.py has to sit beside this script: %s" % exc)
-        return None
 
 
 def rubric_module(required=True):
@@ -619,18 +700,17 @@ def resolve_submission_spec(change):
             types = [str(t).strip() for t in raw if str(t).strip()]
             notes.append("submission_types -> %s" % ",".join(types))
         elif raw is not None and str(raw).strip():
-            spec = submission_types_module()
             words = [w for w in str(raw).replace(",", " ").split() if w]
-            native = [w for w in words if w in spec.CANVAS_SUBMISSION_TYPES]
+            native = [w for w in words if w in CANVAS_SUBMISSION_TYPES]
             tokens = [w for w in words
-                      if any(t in w.lower() for t in spec.SUBMISSION_TOKENS)]
+                      if any(t in w.lower() for t in SUBMISSION_TOKENS)]
 
             if native and len(native) == len(words):
                 types = native
                 notes.append("submission_types -> %s (Canvas's own names)" % ",".join(types))
             elif tokens:
                 token = str(raw).strip()
-                types, resolved = spec.get_submission_spec(token)
+                types, resolved = get_submission_spec(token)
                 notes.append("submission_types %r -> %s" % (token, ",".join(types)))
                 if resolved is None:
                     # The token says "no restriction". On an assignment that already
@@ -646,8 +726,8 @@ def resolve_submission_spec(change):
                     "of the syllabus's tokens (%s). Fix the spelling rather than letting "
                     "this default to an unrestricted upload."
                     % (change.get("_index", 0), str(raw).strip(),
-                       ", ".join(spec.CANVAS_SUBMISSION_TYPES),
-                       ", ".join(spec.SUBMISSION_TOKENS)))
+                       ", ".join(CANVAS_SUBMISSION_TYPES),
+                       ", ".join(SUBMISSION_TOKENS)))
 
     if "allowed_extensions" in change:
         named = as_extension_list(change["allowed_extensions"])
