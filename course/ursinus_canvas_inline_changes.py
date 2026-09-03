@@ -155,8 +155,11 @@ reported and skipped, and the count is repeated at the end of the run so that a
 missing item cannot hide behind "all changes applied"; pass `module:` naming a
 module outright to place it anyway. `--no-modules` turns all of this off.
 
-Adding an item never publishes its module. Filing one assignment should not
-release a whole unpublished week to students.
+Adding an item publishes its module, the way a deploy does, and an assignment or
+module created here is published unless the operation says `published: false`. An
+item filed into a module nobody can see is not filed at all. The dry run names
+every module that would be published, so an unpublished week you meant to keep
+back is visible before anything is written.
 
 One document, one pass
 ----------------------
@@ -877,16 +880,16 @@ class Canvas(object):
     # -- writes ------------------------------------------------------------
 
     def add_item(self, module, payload):
-        """Add an item to a module, leaving the module's published state alone.
+        """Add an item to a module and publish the module, as a deploy does.
 
-        A full deploy publishes the module on every add, because it is building the
-        shell and everything in it is meant to go out at once. Here that would
-        release an unpublished future week to students as a side effect of filing
-        one assignment, which is not what anyone asked for. The plan says when a
-        destination is unpublished so the choice stays the author's.
+        This matches add_module_item in ursinus_canvas.py. An item filed into a
+        module nobody can see is not filed at all, so the module goes out with it;
+        the plan says which module will be published before anything is written.
         """
         sleep_for_rate_limit()
         created = module.create_module_item(module_item=payload)
+        module.edit(module={"published": True})
+        module.published = True
         self.forget_items(module)
         return created
 
@@ -1168,7 +1171,7 @@ def resolve_target_module(canvas, change, key, day, lines, what):
         return None
 
     if not getattr(module, "published", True):
-        lines.append("  NOTE %r is unpublished; the item goes in but stays out of sight"
+        lines.append("  NOTE %r is unpublished and WILL BE PUBLISHED to release the item"
                      % canvas._label(module))
 
     lines.append("  %s -> module %r" % (what, canvas._label(module)))
@@ -1387,7 +1390,7 @@ def plan_operation(canvas, change):
         payload, summary, clear_extensions = assignment_payload(canvas, change)
         payload["name"] = name
         payload.setdefault("points_possible", float(change.get("points", 100)))
-        payload.setdefault("published", as_bool(change.get("published", False)))
+        payload.setdefault("published", as_bool(change.get("published", True)))
         payload.setdefault("submission_types", ["online_upload"])
         lines.append("create assignment %r" % name)
         lines.append("  %d points, %spublished, submission %s"
@@ -1716,9 +1719,8 @@ def plan_operation(canvas, change):
         if "position" in change:
             payload["position"] = int(change["position"])
         lines.append("create module %r %s" % (name, payload))
-        publish = as_bool(change.get("published", False))
-        if publish:
-            lines.append("  and publish it")
+        publish = as_bool(change.get("published", True))
+        lines.append("  and publish it" if publish else "  and leave it unpublished")
 
         def do():
             sleep_for_rate_limit()
