@@ -18,6 +18,7 @@ import json
 import pytz
 import yaml
 import os
+import traceback
 
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/course.py
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/canvas.py
@@ -77,8 +78,14 @@ TABS_TO_SHOW = ["Assignments", "Discussions", "Grades", "People", "Syllabus", "M
 
 # Canvas's built-in Roll Call attendance tool owns a gradebook assignment under this exact
 # name, creating it the first time attendance is taken in a shell.  We do not create it, and
-# reconcile_attendance_grade below is the only place that decides whether it lives or dies.
+# reconcile_attendance_grade below is the only place that decides how it is graded.
 ATTENDANCE_ASSIGNMENT_NAME = "Roll Call Attendance"
+
+# When the syllabus weights no attendance category, the Roll Call row is kept so that the
+# attendance already recorded survives a re-deploy, but it is excluded from the final grade and
+# filed under this group.  Left in Canvas's default Assignments group instead, it would block that
+# group's deletion, and deleting the group would take the row and its recorded attendance with it.
+ATTENDANCE_UNGRADED_GROUP_NAME = "Attendance (Not Counted)"
 
 # Upload extension sets, selected by the tokens in a deliverable's submission_types string.
 # A deliverable naming none of these tokens is left unrestricted, so that any file type can
@@ -263,10 +270,11 @@ def delete_all_assignments(course):
     assignments = course.get_assignments()
 
     for assignment in assignments:        
-        # reconcile_attendance_grade owns the Roll Call assignment's lifecycle, so that a course
-        # grading attendance keeps the attendance already recorded across a re-deploy.  Sweeping it
-        # up here would destroy those scores and hand the recreated assignment back to Canvas in an
-        # unweighted default group, where it would silently stop counting
+        # reconcile_attendance_grade owns the Roll Call assignment, so that the attendance already
+        # recorded survives a re-deploy whether or not the course grades it.  Sweeping it up here
+        # would destroy those scores, and Canvas would hand the recreated assignment back in an
+        # unweighted default group, where a course that does weight attendance would silently stop
+        # counting it
         if str(getattr(assignment, 'name', '') or "").strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
             continue
             
@@ -331,13 +339,34 @@ def delete_all_quizzes(course):
         child_threads.append(t)
         t.start()         
         
+def group_holds_attendance(course, group):
+    """Return True when this assignment group contains Canvas's Roll Call attendance row."""
+    for assignment in get_assignments_in_group(course, group):
+        if isinstance(assignment, dict):
+            name = assignment.get('name')
+        else:
+            name = getattr(assignment, 'name', None)
+
+        if str(name or "").strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
+            return True
+
+    return False
+
 def delete_all_assignment_groups(course):
     if skipassignments:
         return
         
-    groups = course.get_assignment_groups()
+    # Canvas deletes a group's assignments along with the group, and the Roll Call attendance row
+    # carries the attendance already recorded, which delete_all_assignments deliberately spares.
+    # Leave whichever group holds it in place; create_assignmentgroup below reuses a surviving group
+    # by name rather than creating a second one beside it
+    groups = course.get_assignment_groups(include=['assignments'])
     
     for group in groups:
+        if group_holds_attendance(course, group):
+            printlog("NOT deleting the assignment group " + str(group.name) + ": it holds " + ATTENDANCE_ASSIGNMENT_NAME + ", which Canvas would delete along with it, discarding the attendance already recorded.")
+            continue
+            
         t = threading.Thread(target=dodelete, args=(group,))
         child_threads.append(t)
         t.start()         
@@ -451,7 +480,9 @@ def get_attendance_category(postdict):
     category whose name mentions attendance.  A category named only "Participation" does not
     qualify: participation is already carried by the Participation: deliverable prefix and by the
     standing overarching participation module, neither of which uses the Roll Call gradebook row.
-    The test is on the name alone, so a category declared at 0% still keeps the assignment.
+    The test is on the name alone, so a category declared at 0% still grades attendance.  A course
+    that names no such category keeps the Roll Call row too, but excluded from the final grade; see
+    reconcile_attendance_grade.
     """
     # the key can be absent, and it can be present with no value
     for breakdown in (postdict.get('grade_breakdown') or []):
@@ -463,12 +494,21 @@ def get_attendance_category(postdict):
     return None
 
 def reconcile_attendance_grade(course, postdict):
-    """Keep or remove Canvas's Roll Call Attendance gradebook row to match the syllabus.
+    """Grade or exclude Canvas's Roll Call Attendance gradebook row to match the syllabus.
 
-    A course that grades attendance keeps the row, published and counted toward the final grade;
-    add_assignments_to_groups then weights it under the declared category.  A course that does not
-    grade attendance has the row deleted outright, rather than left behind unpublished and worth
-    nothing, which is what this function used to do.
+    A course that weights attendance keeps the row published and counted toward the final grade;
+    add_assignments_to_groups then files it under the declared category.  A course that does not
+    weight attendance keeps the row too, so that the attendance already recorded survives a
+    re-deploy, but with Canvas's "Do not count this assignment towards the final grade" checkbox
+    set and the row unpublished, so that attendance is tracked without reaching the gradebook or
+    the student's view.
+
+    Both outcomes are decided from the syllabus, which is what distinguishes this from the
+    unconditional omit-and-hide this function performed before commit 06fd4d7: a course that wants
+    graded attendance still gets it.
+
+    Returns the Roll Call assignment when the course has one, so that the caller knows whether to
+    create the ungraded attendance group, and None when Canvas has not created the row yet.
     """
     attendance_category = get_attendance_category(postdict)
 
@@ -481,33 +521,53 @@ def reconcile_attendance_grade(course, postdict):
 
     if attendance_assignment is None:
         if attendance_category is None:
-            printlog(ATTENDANCE_ASSIGNMENT_NAME + " assignment not found: nothing to remove.")
+            printlog(ATTENDANCE_ASSIGNMENT_NAME + " assignment not found: nothing to reconcile.")
         else:
             printlog("*** WARNING: " + ATTENDANCE_ASSIGNMENT_NAME + " assignment not found, but the grade breakdown weights \"" + attendance_category + "\".")
             printlog("*** Canvas creates it the first time attendance is taken.  Until this course is deployed again after that, it will sit in an unweighted default group and will not count toward the final grade.")
-        return
+        return None
 
     printlog("Found attendance assignment: " + attendance_assignment.name + " (ID: " + str(attendance_assignment.id) + ")")
 
+    # Send nothing beyond these two fields - Roll Call manages the assignment's points, grading
+    # type, and submission types itself, and an earlier version of this function overwrote
+    # submission_types with "none", which the Assignments API cannot undo because "attendance" is
+    # not a value it accepts.  Neither branch is gated on the skip flags: an edit is not a delete,
+    # and this function has never gated its edits
     if attendance_category is None:
-        # The delete is a delete, so it answers to the same flags the rest of the deletions do
-        if skipassignments or skipalldeletes:
-            printlog("Attendance is not graded, but deletes are suppressed by the command line flags: leaving " + attendance_assignment.name + " in place.")
-            return
+        # Not weighted: exclude it from the final grade and hide it from students
+        try:
+            attendance_assignment.edit(
+                assignment={
+                    "omit_from_final_grade": True,  # attendance is not weighted, so do not count it
+                    "published": False              # and do not show students a row worth nothing
+                }
+            )
 
-        printlog("No grade breakdown category mentions attendance, so attendance is not graded: deleting " + attendance_assignment.name + " from the gradebook.")
+            printlog("No grade breakdown category mentions attendance, so attendance is not graded: " + attendance_assignment.name + " is unpublished and excluded from the final grade.")
+        except Exception as ex:
+            # Canvas refuses to unpublish an assignment that already has submissions, and Roll Call
+            # creates one the first time attendance is taken.  Excluding the row from the grade
+            # matters more than hiding it, so retry without the publish change rather than leave
+            # the assignment counting
+            print("[ursinus_canvas:reconcile_attendance_grade] " + repr(ex))
+            traceback.print_exc()
 
-        # Synchronous, so the row is gone before the assignment groups below are built and before
-        # the default Assignments group is checked for stranded assignments.  Bound the retry: this
-        # runs on the main thread, where an unbounded one would stall the rest of the deployment
-        dodelete(attendance_assignment, maxtries=3)
-        return
+            printlog("*** Could not unpublish " + attendance_assignment.name + ", most likely because attendance has already been recorded against it; retrying with the final grade exclusion alone.")
 
-    # Graded: publish it and let it count.  Send nothing else - Roll Call manages the assignment's
-    # points, grading type, and submission types itself, and an earlier version of this function
-    # overwrote submission_types with "none", which the Assignments API cannot undo because
-    # "attendance" is not a value it accepts.  Unlike the delete above, this edit is not gated on
-    # the skip flags, matching what this function has always done
+            try:
+                attendance_assignment.edit(assignment={"omit_from_final_grade": True})
+
+                printlog("Attendance is not graded: " + attendance_assignment.name + " remains visible to students but is excluded from the final grade.")
+            except Exception as ex:
+                print("[ursinus_canvas:reconcile_attendance_grade] " + repr(ex))
+                traceback.print_exc()
+
+                printlog("*** WARNING: could not exclude " + attendance_assignment.name + " from the final grade.  Check \"Do not count this assignment towards the final grade\" on it in the Canvas UI, or deploy again.")
+
+        return attendance_assignment
+
+    # Weighted: publish it and let it count
     attendance_assignment.edit(
         assignment={
             "omit_from_final_grade": False,  # attendance is weighted, so let it count
@@ -517,7 +577,9 @@ def reconcile_attendance_grade(course, postdict):
 
     printlog("Updated assignment: " + attendance_assignment.name + " is published and counts toward the final grade under the \"" + attendance_category + "\" category.")
     printlog("If this assignment accepts no submissions in Canvas, a previous deployment converted it: delete it in the Canvas UI and take attendance again so that Roll Call recreates it.")
-            
+
+    return attendance_assignment
+
 # https://canvas.instructure.com/doc/api/discussion_topics.html
 # https://canvas.instructure.com/doc/api/discussion_topics.html#method.discussion_topics.create
 # https://canvasapi.readthedocs.io/en/stable/course-ref.html
@@ -801,6 +863,16 @@ def create_rubric(course, inputdict):
     
 # Create Assignment Group: https://canvas.instructure.com/doc/api/assignment_groups.html#method.assignment_groups_api.create
 def create_assignmentgroup(course, inputdict):
+    # A group of this name can already exist: delete_all_assignment_groups leaves behind whichever
+    # group holds the Roll Call attendance row.  Update that group in place, so that the syllabus
+    # still sets its weight, rather than standing a duplicate of the same name beside it
+    existing = get_assignment_group_by_name(course.get_assignment_groups(), str(inputdict.get('name') or ""))
+
+    if existing is not None:
+        printlog("Assignment group " + str(inputdict.get('name')) + " already exists: updating it in place rather than creating a duplicate.")
+        existing.edit(**inputdict)
+        return existing
+
     asmtgroup = course.create_assignment_group(**inputdict)
     return asmtgroup
 
@@ -824,6 +896,19 @@ def get_assignment_group_containing_label(groups, label):
         if label in name:
             return group
     
+    return None
+
+def get_assignment_group_by_name(groups, name):
+    """Resolve a group this script named itself, matching the whole name rather than a substring.
+
+    get_assignment_group_containing_label above is a substring match, which is what a syllabus
+    category label needs and exactly what a name we chose ourselves must not use: a category whose
+    text happened to appear inside our group name would otherwise claim it.
+    """
+    for group in groups:
+        if str(getattr(group, 'name', '') or "").strip() == name:
+            return group
+
     return None
 
 def getposidxandinc(map, key):
@@ -864,13 +949,14 @@ def add_assignments_to_groups(course, postdict):
         # Attendance"), so neither sweep below can resolve this one.  Resolving it from the
         # category we already identified is deterministic where the sweeps are not: their label
         # lookup is a substring match, so the label "Attendance" would also claim a group named
-        # "Attendance and Participation" if a course happened to declare both.  Leaving group as
-        # None when attendance is not graded is deliberate - the assignment is only still here
-        # because a skip flag suppressed its deletion, and it should strand the default group and
-        # raise the existing warning rather than be filed somewhere it does not belong
+        # "Attendance and Participation" if a course happened to declare both.  When attendance is
+        # not weighted, the row is kept but excluded from the final grade, so file it in the 0%
+        # group the caller created for it rather than leaving it to strand the default group
         if name.strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
             if attendance_category is not None:
                 group = get_assignment_group_containing_label(groups, attendance_category)
+            else:
+                group = get_assignment_group_by_name(groups, ATTENDANCE_UNGRADED_GROUP_NAME)
         elif 'Lab:' in name:
             group = get_assignment_group_containing_label(groups, 'Lab')
         elif 'Programming Assignment:' in name:
@@ -1499,14 +1585,13 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 
                 create_calendar_event(canvas, inputdict)    
     
-    # Decide the fate of the Roll Call gradebook row before the groups are built: a delete here
-    # completes before add_assignments_to_groups re-reads the assignment list, and before the
-    # default Assignments group is checked for stranded assignments below, so an ungraded
-    # attendance row can no longer block that group's deletion.  This sits outside the
-    # grade_breakdown guard below so that a syllabus declaring no breakdown at all is still
-    # treated, correctly, as a course that does not grade attendance
+    # Settle how the Roll Call gradebook row is graded before the groups are built, so that the
+    # group creation below knows whether an ungraded attendance group is needed and
+    # add_assignments_to_groups can file the row into it.  This sits outside the grade_breakdown
+    # guard below so that a syllabus declaring no breakdown at all is still treated, correctly, as
+    # a course that does not grade attendance
     printlog("Reconciling attendance assignment...")
-    reconcile_attendance_grade(course, postdict)
+    attendance_assignment = reconcile_attendance_grade(course, postdict)
 
     printlog("Creating Assignment Groups...")
     
@@ -1520,6 +1605,14 @@ def process_markdown(fname, canvas, course, courseid, homepage):
             
             # The Assignments group might exist by default - don't call anything that group name as an assignment category or grade breakdown just in case
             create_assignmentgroup(course, inputdict)
+            
+        # Give the retained-but-uncounted attendance row a home of its own, weighted at 0% so that
+        # it contributes nothing even before the assignment's own exclusion is considered.  Created
+        # only when the course actually has a Roll Call row, so that a course which never takes
+        # attendance is not left with a stray empty group
+        if attendance_assignment is not None and get_attendance_category(postdict) is None:
+            printlog("Attendance is not weighted: creating the \"" + ATTENDANCE_UNGRADED_GROUP_NAME + "\" group at 0% to hold " + ATTENDANCE_ASSIGNMENT_NAME + ".")
+            create_assignmentgroup(course, {'name': ATTENDANCE_UNGRADED_GROUP_NAME, 'group_weight': 0.0})
             
         add_assignments_to_groups(course, postdict)
         
@@ -1560,7 +1653,7 @@ def usage():
     print("\tpresentation\tupload: " + ", ".join(EXTENSIONS_WRITTEN + EXTENSIONS_PRESENTATION))
     print("\tzip\t\tupload: " + ", ".join(EXTENSIONS_ARCHIVE))
     print("\tanything else\tupload with no file type restriction (the default)")
-    print("\nAttendance is graded only when a grade_breakdown category name mentions attendance; otherwise the " + ATTENDANCE_ASSIGNMENT_NAME + " gradebook entry is deleted.")
+    print("\nAttendance is graded only when a grade_breakdown category name mentions attendance; otherwise the " + ATTENDANCE_ASSIGNMENT_NAME + " gradebook entry is kept for tracking, unpublished, and excluded from the final grade under a 0% \"" + ATTENDANCE_UNGRADED_GROUP_NAME + "\" group.")
     
 # Only run the deployment when invoked as a script, so that these functions can be imported
 if __name__ == "__main__":
