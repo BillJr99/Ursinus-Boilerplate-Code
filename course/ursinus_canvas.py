@@ -280,13 +280,17 @@ def delete_rubric(rubric, dosleep=True):
         sleeptime = random.randint(5, 20)
         time.sleep(sleeptime)
         
-    rubric = None
+    # Hold the response separately: this used to rebind rubric to None before reading rubric.id,
+    # so every call raised AttributeError into a bare except and no rubric was ever deleted
+    response = None
+    
     try:
-        rubric = canvas_http_request('/api/v1/courses/' + str(courseid) + '/rubrics/' + str(rubric.id), method="DELETE")
-    except:
-        print("Error Deleting Rubric")
+        response = canvas_http_request('/api/v1/courses/' + str(courseid) + '/rubrics/' + str(rubric.id), method="DELETE")
+        printlog("Delete Rubric: Successful")
+    except Exception as ex: # named, so a failure is reported rather than silently swallowed
+        print("Error Deleting Rubric - " + repr(ex))
         
-    return rubric
+    return response
     
 def delete_all_rubrics(course):
     if skipassignments:
@@ -758,9 +762,25 @@ def get_submission_spec(submissiontypes):
     return (types, deduped)
 
 # Create Assignment Shells: https://canvasapi.readthedocs.io/en/stable/examples.html#create-an-assignment
+def find_assignment_by_name(course, assignment_name):
+    assignments = course.get_assignments()
+    
+    for assignment in assignments:
+        if assignment.name == assignment_name:
+            print("Found assignment: " + assignment.name + " while searching for: " + assignment_name)
+        
+            return assignment
+            
+    return None # not found
+    
 def create_assignment(course, inputdict):
     if skipassignments:
-        return
+        # -s leaves existing assignments alone, but the caller still needs one to hang a rubric
+        # on and to link from the modules view, which is what the flag promises to keep doing.
+        # Hand back the assignment already in the shell rather than None, which the caller would
+        # dereference; it can still be None when nothing by that name is there, and the caller
+        # checks for that
+        return find_assignment_by_name(course, inputdict['name'])
 
     asmt = course.create_assignment(inputdict)
     
@@ -1206,6 +1226,13 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                             
                     assignment = create_assignment(course, inputdict)
                     asmtidx = asmtidx + 1
+                    
+                    if assignment is None:
+                        # Only reachable under -s, when no assignment by this name is in the shell.
+                        # There is nothing to associate a rubric with or to link from the module,
+                        # so leave this deliverable alone rather than dereferencing None
+                        printlog("Warning: no assignment named " + description + " in Canvas, so its rubric and module item were skipped.")
+                        continue
                     
                     assignmentid = assignment.id
                     
