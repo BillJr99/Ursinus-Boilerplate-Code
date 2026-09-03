@@ -75,6 +75,18 @@ def get_item_date(item, startdate, M, T, W, R, F, S, U):
 TABS_TO_HIDE = ["Outcomes", "Collaborations", "Files", "Pages", "Conferences", "BigBlueButton", "Chat", "New Analytics", "Panopto Video", "Zoom"] # which navigation pane items to hide if they are visible
 TABS_TO_SHOW = ["Assignments", "Discussions", "Grades", "People", "Syllabus", "Modules", "Grizzly Gateway", "SPTQ", "Attendance", "Rubrics", "Quizzes", "Announcements" ] # which navigation pane items to force show if they are already hidden
 
+# Canvas's built-in Roll Call attendance tool owns a gradebook assignment under this exact
+# name, creating it the first time attendance is taken in a shell.  We do not create it, and
+# reconcile_attendance_grade below is the only place that decides whether it lives or dies.
+ATTENDANCE_ASSIGNMENT_NAME = "Roll Call Attendance"
+
+# Upload extension sets, selected by the tokens in a deliverable's submission_types string.
+# A deliverable naming none of these tokens is left unrestricted, so that any file type can
+# be submitted; see get_submission_spec below.
+EXTENSIONS_WRITTEN = ['pdf', 'doc', 'docx', 'txt']
+EXTENSIONS_ARCHIVE = ['zip', 'bz2', 'tar', 'gz', 'rar', '7z']
+EXTENSIONS_PRESENTATION = ['ppt', 'pptx']
+
 child_threads = []
 
 skipdiscussions = False
@@ -197,14 +209,21 @@ def lia_resolve(entry, url, lia_base):
 
     return url
 
-def dodelete(item, dosleep=True):
+# maxtries bounds the retry on the two recoverable branches below.  The default of None keeps
+# the original unbounded behavior for every caller that hands this to a worker thread, where a
+# stuck delete costs only the final join.  A synchronous caller should pass a small limit
+# instead: an unbounded retry on the main thread stalls the rest of the deployment.
+def dodelete(item, dosleep=True, maxtries=None):
     repeat = True
+    tries = 0
     
     while repeat:
         if dosleep: # for rate limiting
             sleeptime = random.randint(5, 20)
             time.sleep(sleeptime)
             
+        tries = tries + 1
+        
         try:
             item.delete()
             printlog("Delete: Successful")
@@ -224,6 +243,10 @@ def dodelete(item, dosleep=True):
         except Exception as ex:
             print("Deleting: Unknown Error - " + repr(ex))
             repeat = False
+            
+        if repeat and not (maxtries is None) and tries >= maxtries:
+            printlog("Deleting: giving up after " + str(tries) + " attempt(s); the item was not deleted.")
+            repeat = False
              
 def delete_all_events(canvas, coursecontext):
     events = canvas.get_calendar_events(all_events = True, context_codes = [coursecontext])
@@ -240,6 +263,13 @@ def delete_all_assignments(course):
     assignments = course.get_assignments()
 
     for assignment in assignments:        
+        # reconcile_attendance_grade owns the Roll Call assignment's lifecycle, so that a course
+        # grading attendance keeps the attendance already recorded across a re-deploy.  Sweeping it
+        # up here would destroy those scores and hand the recreated assignment back to Canvas in an
+        # unweighted default group, where it would silently stop counting
+        if str(getattr(assignment, 'name', '') or "").strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
+            continue
+            
         t = threading.Thread(target=dodelete, args=(assignment,))
         child_threads.append(t)
         t.start()           
@@ -410,33 +440,79 @@ def arrange_tabs(course):
         if tab.label in TABS_TO_SHOW:
             tab.update(hidden=False)
 
-def omit_attendance_grade(course, ATTENDANCE_NAME="Roll Call Attendance"):
-    # Retrieve assignments
-    assignments = course.get_assignments()
+def get_attendance_category(postdict):
+    """Return the grade_breakdown category that grades attendance, or None if none does.
+
+    Attendance counts as graded when, and only when, the syllabus declares a grade breakdown
+    category whose name mentions attendance.  A category named only "Participation" does not
+    qualify: participation is already carried by the Participation: deliverable prefix and by the
+    standing overarching participation module, neither of which uses the Roll Call gradebook row.
+    The test is on the name alone, so a category declared at 0% still keeps the assignment.
+    """
+    # the key can be absent, and it can be present with no value
+    for breakdown in (postdict.get('grade_breakdown') or []):
+        category = str((breakdown or {}).get('category') or "")
+
+        if "attendance" in category.lower():
+            return category
+
+    return None
+
+def reconcile_attendance_grade(course, postdict):
+    """Keep or remove Canvas's Roll Call Attendance gradebook row to match the syllabus.
+
+    A course that grades attendance keeps the row, published and counted toward the final grade;
+    add_assignments_to_groups then weights it under the declared category.  A course that does not
+    grade attendance has the row deleted outright, rather than left behind unpublished and worth
+    nothing, which is what this function used to do.
+    """
+    attendance_category = get_attendance_category(postdict)
 
     # Search for the Roll Call Attendance assignment
     attendance_assignment = None
-    for assignment in assignments:
-        if assignment.name.strip().lower() == ATTENDANCE_NAME.lower():
+    for assignment in course.get_assignments():
+        if assignment.name.strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
             attendance_assignment = assignment
             break  # Stop searching once found
 
-    if attendance_assignment:
-        printlog(f"Found attendance assignment: {attendance_assignment.name} (ID: {attendance_assignment.id})")
+    if attendance_assignment is None:
+        if attendance_category is None:
+            printlog(ATTENDANCE_ASSIGNMENT_NAME + " assignment not found: nothing to remove.")
+        else:
+            printlog("*** WARNING: " + ATTENDANCE_ASSIGNMENT_NAME + " assignment not found, but the grade breakdown weights \"" + attendance_category + "\".")
+            printlog("*** Canvas creates it the first time attendance is taken.  Until this course is deployed again after that, it will sit in an unweighted default group and will not count toward the final grade.")
+        return
 
-        # Update the assignment to be excluded from the final grade and hidden from students
-        attendance_assignment.edit(
-            assignment={
-                "submission_types": ["none"],  # No submission
-                "points_possible": 100,  # Points remain, but do not count toward the final grade
-                "grading_type": "points",  # Enables attendance tracking
-                "omit_from_final_grade": True,  # Ensures it's excluded from the final grade
-                "published": False  # Hide the assignment from students by unpublishing it
-            }
-        )
-        printlog(f"Updated assignment: {attendance_assignment.name} is now hidden and does not count toward the final grade.")
-    else:
-        printlog("Roll Call Attendance assignment not found.")    
+    printlog("Found attendance assignment: " + attendance_assignment.name + " (ID: " + str(attendance_assignment.id) + ")")
+
+    if attendance_category is None:
+        # The delete is a delete, so it answers to the same flags the rest of the deletions do
+        if skipassignments or skipalldeletes:
+            printlog("Attendance is not graded, but deletes are suppressed by the command line flags: leaving " + attendance_assignment.name + " in place.")
+            return
+
+        printlog("No grade breakdown category mentions attendance, so attendance is not graded: deleting " + attendance_assignment.name + " from the gradebook.")
+
+        # Synchronous, so the row is gone before the assignment groups below are built and before
+        # the default Assignments group is checked for stranded assignments.  Bound the retry: this
+        # runs on the main thread, where an unbounded one would stall the rest of the deployment
+        dodelete(attendance_assignment, maxtries=3)
+        return
+
+    # Graded: publish it and let it count.  Send nothing else - Roll Call manages the assignment's
+    # points, grading type, and submission types itself, and an earlier version of this function
+    # overwrote submission_types with "none", which the Assignments API cannot undo because
+    # "attendance" is not a value it accepts.  Unlike the delete above, this edit is not gated on
+    # the skip flags, matching what this function has always done
+    attendance_assignment.edit(
+        assignment={
+            "omit_from_final_grade": False,  # attendance is weighted, so let it count
+            "published": True                # and let students see it
+        }
+    )
+
+    printlog("Updated assignment: " + attendance_assignment.name + " is published and counts toward the final grade under the \"" + attendance_category + "\" category.")
+    printlog("If this assignment accepts no submissions in Canvas, a previous deployment converted it: delete it in the Canvas UI and take attendance again so that Roll Call recreates it.")
             
 # https://canvas.instructure.com/doc/api/discussion_topics.html
 # https://canvas.instructure.com/doc/api/discussion_topics.html#method.discussion_topics.create
@@ -627,6 +703,60 @@ def find_quiz_by_title(course, quiz_name):
             
     return None # not found
     
+def get_submission_spec(submissiontypes):
+    """Map a deliverable's submission_types string onto Canvas submission types and extensions.
+
+    Returns (submission_types, allowed_extensions), where allowed_extensions is None when no
+    restriction should be sent at all.  The tokens are matched as substrings of one free-text
+    string, so a deliverable may name more than one and their extension sets accumulate:
+    "written presentation" accepts everything either tag allows.
+
+    An unrecognized or empty string yields an unrestricted upload.  That is the deliberate
+    default: a deliverable whose author did not think to tag it should not silently refuse the
+    PDF, image, or notebook a student tries to hand in.
+
+    onpaper       -> on_paper
+    noupload      -> online_text_entry
+    written       -> online_upload + online_text_entry; pdf doc docx txt + the archives
+    presentation  -> online_upload; pdf doc docx txt ppt pptx
+    zip           -> online_upload; zip bz2 tar gz rar 7z
+    (none)        -> online_upload; no extension restriction
+    """
+    submissiontypes = str(submissiontypes or "").lower()
+
+    # These two describe how the work arrives rather than what file it is, so they short-circuit
+    if "onpaper" in submissiontypes:
+        return (['on_paper'], None)
+
+    if "noupload" in submissiontypes:
+        return (['online_text_entry'], None)
+
+    types = ['online_upload']
+    extensions = []
+
+    # Accumulate in a stable order, and let a deliverable name several tags at once
+    if "written" in submissiontypes:
+        types.append('online_text_entry')
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_ARCHIVE
+
+    if "presentation" in submissiontypes:
+        extensions = extensions + EXTENSIONS_WRITTEN + EXTENSIONS_PRESENTATION
+
+    if "zip" in submissiontypes:
+        extensions = extensions + EXTENSIONS_ARCHIVE
+
+    # Preserve first-seen order while dropping the overlap between the sets above
+    deduped = []
+    for extension in extensions:
+        if not (extension in deduped):
+            deduped.append(extension)
+
+    # An empty list would be sent as a restriction allowing nothing, so omit the key entirely
+    if len(deduped) == 0:
+        return (types, None)
+
+    return (types, deduped)
+
 # Create Assignment Shells: https://canvasapi.readthedocs.io/en/stable/examples.html#create-an-assignment
 def create_assignment(course, inputdict):
     if skipassignments:
@@ -698,6 +828,9 @@ def add_assignments_to_groups(course, postdict):
     # If the assignment is already in the quiz group due to an import, don't move it
     quizgroup = get_assignment_group_containing_label(groups, 'Quiz') 
     
+    # Resolve the attendance category once rather than per assignment; it reads only the syllabus
+    attendance_category = get_attendance_category(postdict)
+    
     # If Lab, Project, Assignment (etc...) is in the name, add it to the weight column with Lab, Project, or Assignment (etc...) in the name (you can prefix a deliverable name with the name of a grade breakdown column and it will add to that as well)
     for assignment in assignments:
         name = assignment.name
@@ -706,7 +839,19 @@ def add_assignments_to_groups(course, postdict):
         
         group = None
         
-        if 'Lab:' in name:
+        # Test attendance first: the category name the instructor chose ("Attendance and
+        # Participation") need not appear in the assignment name Canvas chose ("Roll Call
+        # Attendance"), so neither sweep below can resolve this one.  Resolving it from the
+        # category we already identified is deterministic where the sweeps are not: their label
+        # lookup is a substring match, so the label "Attendance" would also claim a group named
+        # "Attendance and Participation" if a course happened to declare both.  Leaving group as
+        # None when attendance is not graded is deliberate - the assignment is only still here
+        # because a skip flag suppressed its deletion, and it should strand the default group and
+        # raise the existing warning rather than be filed somewhere it does not belong
+        if name.strip().lower() == ATTENDANCE_ASSIGNMENT_NAME.lower():
+            if attendance_category is not None:
+                group = get_assignment_group_containing_label(groups, attendance_category)
+        elif 'Lab:' in name:
             group = get_assignment_group_containing_label(groups, 'Lab')
         elif 'Programming Assignment:' in name:
             group = get_assignment_group_containing_label(groups, 'Programming Assignment')
@@ -1037,28 +1182,13 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     # read the submission types once: the key can be present with no value
                     submissiontypes = str(deliverable.get('submission_types') or "").lower()
 
+                    submission_types, allowed_extensions = get_submission_spec(submissiontypes)
+
                     inputdict = {}
                     inputdict['name'] = description
-                    inputdict['submission_types'] = []
-                    if "onpaper" in submissiontypes:
-                        inputdict['submission_types'].append('on_paper')
-                    elif "noupload" in submissiontypes:
-                        inputdict['submission_types'].append('online_text_entry')                    
-                    else:
-                        inputdict['submission_types'].append('online_upload')
-                        inputdict['allowed_extensions'] = []
-                        inputdict['allowed_extensions'].append('zip')
-                        inputdict['allowed_extensions'].append('bz2')
-                        inputdict['allowed_extensions'].append('tar')
-                        inputdict['allowed_extensions'].append('gz')
-                        inputdict['allowed_extensions'].append('rar')
-                        inputdict['allowed_extensions'].append('7z')
-                        if "written" in submissiontypes:
-                            inputdict['submission_types'].append('online_text_entry')
-                            inputdict['allowed_extensions'].append('pdf')
-                            inputdict['allowed_extensions'].append('doc')
-                            inputdict['allowed_extensions'].append('docx')
-                            inputdict['allowed_extensions'].append('txt')
+                    inputdict['submission_types'] = submission_types
+                    if not (allowed_extensions is None): # omit the key to accept any file type
+                        inputdict['allowed_extensions'] = allowed_extensions
                     inputdict['notify_of_update'] = True
                     inputdict['published'] = True
                     inputdict['points_possible'] = points
@@ -1226,9 +1356,6 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 
                 add_module_item(tagged_modules.get(get_module_tag(reading), module), inputdict) 
 
-    printlog("Omitting attendance grade...")
-    omit_attendance_grade(course)                
-    
     # https://canvas.instructure.com/doc/api/late_policy.html
     printlog("Writing Late Policy...")
     inputdict = {}
@@ -1345,6 +1472,15 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 
                 create_calendar_event(canvas, inputdict)    
     
+    # Decide the fate of the Roll Call gradebook row before the groups are built: a delete here
+    # completes before add_assignments_to_groups re-reads the assignment list, and before the
+    # default Assignments group is checked for stranded assignments below, so an ungraded
+    # attendance row can no longer block that group's deletion.  This sits outside the
+    # grade_breakdown guard below so that a syllabus declaring no breakdown at all is still
+    # treated, correctly, as a course that does not grade attendance
+    printlog("Reconciling attendance assignment...")
+    reconcile_attendance_grade(course, postdict)
+
     printlog("Creating Assignment Groups...")
     
     # Write Out Assignment Groups   
@@ -1390,6 +1526,14 @@ def usage():
     print("\t[-l | --nolecturecalendar]\tDo not upload lecture calendar")
     print("\t[-k | --nodeletes]\tDo not delete old data")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
+    print("\nA deliverable's submission_types recognizes these tokens, and a deliverable may name more than one:")
+    print("\tonpaper\t\tsubmitted on paper, with no Canvas upload")
+    print("\tnoupload\ttyped into Canvas, with no file upload")
+    print("\twritten\t\tupload or typed entry: " + ", ".join(EXTENSIONS_WRITTEN + EXTENSIONS_ARCHIVE))
+    print("\tpresentation\tupload: " + ", ".join(EXTENSIONS_WRITTEN + EXTENSIONS_PRESENTATION))
+    print("\tzip\t\tupload: " + ", ".join(EXTENSIONS_ARCHIVE))
+    print("\tanything else\tupload with no file type restriction (the default)")
+    print("\nAttendance is graded only when a grade_breakdown category name mentions attendance; otherwise the " + ATTENDANCE_ASSIGNMENT_NAME + " gradebook entry is deleted.")
     
 # Only run the deployment when invoked as a script, so that these functions can be imported
 if __name__ == "__main__":
