@@ -1350,12 +1350,17 @@ def plan_module_moves(canvas, change, assignment, payload, lines):
     return moves
 
 
-def _mover(canvas, source, item, destination, title):
-    """A move is a create plus a delete, so everything the item carries has to be copied.
+def move_payload(item, title):
+    """Everything an item carries, as the payload that recreates it in another module.
 
-    Anything left out of this payload is silently lost: an indent flattens, and a
-    completion requirement ("students must submit this") disappears from a module
-    that had one, which changes what the module says a student has to do.
+    A move is a create plus a delete, so anything left out of here is silently lost:
+    an indent flattens, and a completion requirement ("students must submit this")
+    disappears from a module that had one, which changes what the module says a
+    student has to do. A url left out is worse than silent -- Canvas refuses to
+    create an ExternalUrl item with no external_url, so the move fails outright.
+
+    Both movers build their payload here so that neither can drift into copying less
+    than the other.
     """
     payload = {"title": title,
                "type": getattr(item, "type", "Assignment"),
@@ -1372,6 +1377,12 @@ def _mover(canvas, source, item, destination, title):
         payload["completion_requirement[type]"] = requirement["type"]
         if requirement.get("min_score") is not None:
             payload["completion_requirement[min_score]"] = requirement["min_score"]
+
+    return payload
+
+
+def _mover(canvas, source, item, destination, title):
+    payload = move_payload(item, title)
 
     def run():
         canvas.move_item(item, source, destination, payload)
@@ -1902,10 +1913,7 @@ def plan_operation(canvas, change):
         destination = canvas.find_module(change["to_module"])
         if destination is None:
             die("no module named %r to move into" % change["to_module"])
-        payload = {"title": item.title, "type": item.type,
-                   "published": getattr(item, "published", True)}
-        if getattr(item, "content_id", None):
-            payload["content_id"] = item.content_id
+        payload = move_payload(item, item.title)
         if "position" in change:
             payload["position"] = int(change["position"])
         lines.append("move item %r from %r to %r" % (item.title, module.name, destination.name))
