@@ -80,6 +80,7 @@ Operations
     item.add            module, title, type, [content: assignment name], [position],
                         [url], [indent], [published]
     item.remove         module, title
+    item.update         module, title, rename        -- retitle an item in place
     item.move           module, title, position (or to_module)
 
 Due dates
@@ -365,7 +366,7 @@ OPS = (
     "rubric.detach", "rubric.replace",
     "group.create", "group.update", "group.delete",
     "module.create", "module.update", "module.delete",
-    "item.add", "item.remove", "item.move",
+    "item.add", "item.remove", "item.update", "item.move",
 )
 
 
@@ -1905,6 +1906,21 @@ def plan_operation(canvas, change):
             item.delete()
             canvas.forget_items(module)
             return "removed %r from %r" % (item.title, module.name)
+
+        return lines, do
+
+    if op == "item.update":
+        new_title = str(change.get("rename") or "").strip()
+        if not new_title:
+            die("op %d (item.update): 'rename' is required" % change["_index"])
+        lines.append("retitle item %r in module %r" % (item.title, module.name))
+        lines.append("  to %r (position and link unchanged)" % new_title)
+
+        def do():
+            sleep_for_rate_limit()
+            item.edit(module_item={"title": new_title})
+            canvas.forget_items(module)
+            return "retitled %r to %r in %r" % (item.title, new_title, module.name)
 
         return lines, do
 
