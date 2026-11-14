@@ -466,8 +466,8 @@ stand-in records the drawing and saves it at `done()` or exit; the ezgraphics st
 drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
 growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
 example fails visibly and is not labeled. An endless animation (`while True:` drawing frames) is
-stopped after CVIZ_DRAW_MAX drawing calls or moves (default 5000): the canvas is saved as it is then,
-the output says "(code-viz: stopped the drawing after 5000 drawing calls ...)", and the program ends
+stopped after CVIZ_DRAW_MAX drawing calls or moves (default 1000): the canvas is saved as it is then,
+the output says "(code-viz: stopped the drawing after 1000 drawing calls ...)", and the program ends
 normally instead of timing out. Figures are deterministic (72 dpi, at most 900 pixels wide,
 no metadata), at most 8 per example and 600 KB in all (more are counted as `figures_dropped`). Click
 a figure to open it full size. `label` suggests `viz=plain` for Python that uses matplotlib,
