@@ -164,9 +164,11 @@ Assignments, Projects and notes pages, but never a submodule listed in `.gitmodu
 up to 12 spaces, as a code block inside a list item is (its closing fence may be indented up to
 three spaces more or less than the opening one); the label and the link line are written with the
 same indent, so they stay inside the list item. Ids are unique across the site: two pages with
-the same file name in different folders get different numbers. Pages are written back with the line
-ending they had (many course pages use CRLF), and a page is only written when a label or link was
-added, so a `label` run that keeps nothing leaves the page byte for byte unchanged.
+the same file name in different folders get different numbers. Pages are written back with every
+line keeping its own ending (many course pages use CRLF, some only on some lines; an added line takes
+the ending of the line above it), and a page is only written when a label or link was added, so a
+`label` run that keeps nothing leaves the page byte for byte unchanged and one that labels changes
+only the added lines.
 
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
 a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
@@ -827,12 +829,9 @@ def site_info(root):
 
 
 def write_page(root, page, lines):
-    """Write a page back with the line ending it had (many course pages use CRLF): reading
-    normalizes to \\n, so writing "\\n" would rewrite every line of such a page."""
-    path = os.path.join(root, page)
-    crlf = b"\r\n" in open(path, "rb").read()
-    with open(path, "w", encoding="utf-8", newline="\r\n" if crlf else "\n") as f:
-        f.write("\n".join(lines))
+    """Write a page back with every original line keeping its own ending (many course pages use CRLF,
+    some on only some lines); an added line takes the ending of the line above it (notebooks.write_lines)."""
+    NB.write_lines(os.path.join(root, page), lines)
 
 
 def submodule_dirs(root):

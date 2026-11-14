@@ -165,9 +165,11 @@ Assignments, Projects and notes pages, but never a submodule listed in `.gitmodu
 up to 12 spaces, as a code block inside a list item is (its closing fence may be indented up to
 three spaces more or less than the opening one); the label and the link line are written with the
 same indent, so they stay inside the list item. Ids are unique across the site: two pages with
-the same file name in different folders get different numbers. Pages are written back with the line
-ending they had (many course pages use CRLF), and a page is only written when a label or link was
-added, so a `label` run that keeps nothing leaves the page byte for byte unchanged.
+the same file name in different folders get different numbers. Pages are written back with every
+line keeping its own ending (many course pages use CRLF, some only on some lines; an added line takes
+the ending of the line above it), and a page is only written when a label or link was added, so a
+`label` run that keeps nothing leaves the page byte for byte unchanged and one that labels changes
+only the added lines.
 
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
 a heading that is just "Key", is not suggested (course pages should not print solutions; such a block

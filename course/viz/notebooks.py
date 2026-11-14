@@ -32,6 +32,36 @@ import sys
 INDEX = os.path.join("viz", "notebooks.json")
 
 
+def write_lines(path, lines, original=None):
+    """Write a page's lines back keeping every original line's own ending. Pages are read with
+    universal newlines (\\r\\n becomes \\n), and many course pages use CRLF, some only on some lines;
+    writing one ending for the whole file would rewrite those lines. Unchanged lines keep the ending
+    they had (matched with difflib against the file, or `original` bytes when given); an added line
+    takes the ending of the line above it."""
+    import difflib
+    raw = (original if original is not None else open(path, "rb").read()).decode("utf-8", errors="replace")
+    pieces = raw.split("\n")
+    ends = ["\r\n" if p.endswith("\r") else "\n" for p in pieces[:-1]]
+    norm = [p[:-1] if p.endswith("\r") else p for p in pieces]
+    first = ends[0] if ends else "\n"
+    out = [None] * len(lines)
+    sm = difflib.SequenceMatcher(None, norm, lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                if i1 + k < len(ends):
+                    out[j1 + k] = ends[i1 + k]
+    prev = first
+    for j in range(len(lines)):
+        if out[j] is None:
+            out[j] = prev
+        else:
+            prev = out[j]
+    text = "".join(l + out[j] for j, l in enumerate(lines[:-1])) + (lines[-1] if lines else "")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
 def find(root):
     """Notebook paths (relative to root) under files/, sorted; checkpoints are skipped."""
     out = []
@@ -179,10 +209,7 @@ def add_links(root, info, pages, link_mark, check=False):
             continue
         j, indent = _slot(lines, i)
         lines[j:j] = ["", indent + link_text(info, ids, cells) + " " + link_mark]
-        path = os.path.join(root, page)
-        crlf = b"\r\n" in open(path, "rb").read()   # keep the page's line ending (many pages use CRLF)
-        with open(path, "w", encoding="utf-8", newline="\r\n" if crlf else "\n") as f:
-            f.write("\n".join(lines))
+        write_lines(os.path.join(root, page), lines)   # every line keeps its own ending
     return missing
 
 
@@ -204,8 +231,6 @@ def unlabel(root, gone, info=None, pages=(), link_mark=None):
         keep = [l for l in lines if not (link_mark in l and "Visualize this notebook's examples" in l
                                          and any(f"/viz/#{g})" in l for g in gone))]
         if len(keep) != len(lines):
-            crlf = b"\r\n" in open(path, "rb").read()
-            with open(path, "w", encoding="utf-8", newline="\r\n" if crlf else "\n") as f:
-                f.write("\n".join(keep))
+            write_lines(path, keep)
     if info:
         add_links(root, info, pages, link_mark)
