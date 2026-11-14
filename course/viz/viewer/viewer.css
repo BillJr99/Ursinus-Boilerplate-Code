@@ -133,3 +133,9 @@ body.student .panel { overflow-x: auto; }
    of the scroll; the current line is kept in view inside the code box. */
 body.student .code { max-height: 40vh; }
 body.student .output { max-height: 22vh; }
+
+/* setup= examples: the earlier cells' code, collapsed above the stepped code */
+.setupbox { margin: 0 0 6px; border: 1px dashed var(--line, #8884); border-radius: 6px; }
+.setupbox > summary { cursor: pointer; padding: 4px 8px; font-size: 0.85em; color: var(--muted, #666); }
+.setupbox > pre { margin: 0; max-height: 30vh; overflow: auto; opacity: 0.8; }
+body.student .setupbox > summary { min-height: 44px; display: flex; align-items: center; }

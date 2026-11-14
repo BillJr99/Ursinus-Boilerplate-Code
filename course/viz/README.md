@@ -94,6 +94,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `args="..."` | command line arguments (Python and agent examples) |
 | `timeout=N` | seconds for this example (default 20; agents 300) |
 | `max_steps=N` | step cap for this example (default 800) |
+| `setup=ID[,ID]` | Python only: run these earlier blocks' code first, untraced and silent (below) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
@@ -105,6 +106,22 @@ use the ids written in `viz/manifest.json`.
 **Links.** `label --links` writes the "Visualize this example" line, marked `<!-- code-viz link -->`
 so `unlabel` can find it. It goes after any LiaScript run macro (`@LIA.eval(...)`, `@Pyodide.eval`)
 that follows the fence, so the deck's own Run button keeps working.
+
+**Setup cells.** A notebook-style page often has a Setup cell that later cells depend on (CS357's
+orchestration workshop: Steps 1 to 3 all call the Setup cell's `llm()` and read its `MESSAGES`).
+Such a cell cannot run alone, so it carries `setup=` with the ids of the cells it needs:
+
+    <!-- run: id=cs357-liascript-orchestrationworkshop-4 viz=env setup=cs357-liascript-orchestrationworkshop-1 -->
+
+The setup blocks run first, in the order given, in the same globals, with their output discarded
+and nothing recorded; then the cell itself is traced. Each setup block's own `setup=` is resolved
+first (so a chain like Setup, Step 1, Step 2 needs only `setup=<step 1 id>` on Step 2, when Step 1
+says `setup=<setup id>`), and an id is used once. The stepped lines, the output and the step count
+are the cell's own; names the setup defined appear in the global frame, and functions it defined run
+without being stepped. The viewer and student mode show the setup code collapsed above the cell
+("Setup code from ... (runs first, not stepped)"), and Edit and run re-runs the edited cell after the
+same setup. For agent examples the setup's model calls are not recorded. A setup id must be a labeled
+block; `catalog` and `label` work these out (section 5).
 
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`
@@ -124,7 +141,10 @@ Global options go before the subcommand:
 ### catalog
 
 Lists labeled examples and suggests labels for blocks that look runnable (known language, only
-standard-library or known imports, not a fragment).
+standard-library or known imports, not a fragment). A Python block that uses names it does not
+define is suggested with `setup=` naming the earlier blocks on the same page that define them (an
+unlabeled one shows as `lineN`: label it first); a block that uses a name no earlier block defines
+is not suggested.
 
 ```
 code-viz catalog
@@ -137,7 +157,9 @@ code-viz catalog -v                     # also list every suggestion with its pa
 Applies the suggested labels. Options: `--page`, `--lang`, `--viz` (limit what is labeled), `--try`
 (run each candidate first and label only those that run cleanly), `--links` (add the Visualize link),
 `--agents` (also label agent examples, recorded rather than re-run), `--ollama-network NET` (for
-`--try` on agent examples).
+`--try` on agent examples). Suggested `setup=` fields are written with the label; a block whose
+setup block is unlabeled is skipped until that block is labeled, so running `label` twice picks up
+chains.
 
 ```
 code-viz label --try --links
@@ -208,7 +230,11 @@ Writes QR codes of examples' student links to `viz/qr/<id>.svg` and `viz/qr/<id>
 throwaway `qr` runner (python:3.12-slim with segno). Ids are checked against the labeled examples
 and `viz/index.json`. Options: `--out DIR` (default `viz/qr/`), `--scale N` (pixels per module,
 default 10), `--snippet` (also print a Markdown block for a deck), `--print` (only print the links;
-no container), `--force` (allow ids that are not labeled examples).
+no container), `--force` (allow ids that are not labeled examples). The snippet's image address
+follows `--out`: the absolute site URL of that folder (a folder under `_pages/` is served without
+the `_pages/` prefix). When `--out` is outside the repo, or in a folder the site does not serve (a
+name starting with `_` or `.`), the snippet uses the local file path and a note says to copy the
+image into the repo.
 
 ```
 code-viz qr cs374-liascript-scope-chains-9
@@ -234,7 +260,10 @@ that used to run now errors; with `--strict` it also fails when an output change
 change, run `build --update-expected` and commit.
 
 Builds are deterministic so the repo stays quiet: traces are written with sorted keys and gzip
-`mtime=0`, a trace whose content did not change is not rewritten, and `viz/index.json` keeps its
+`mtime=0`, Python heap objects are numbered in the order first seen (not by memory address),
+memory addresses are cut out of object reprs, Python runs with `PYTHONHASHSEED=0` (the same set and
+dict-of-set order every time), a
+trace whose content did not change is not rewritten, and `viz/index.json` keeps its
 "built" time when no example changed. A `build --check` on an unchanged repo leaves `git status`
 clean. Two things still churn on purpose: agent outputs (model replies differ on every recording,
 so they are never compared) and any example that prints a time, a date, a random number or a memory
@@ -333,9 +362,12 @@ works offline once the page has loaded.
 `viz/qr/` so the course site serves the images. `--snippet` prints a block to paste into a deck:
 
 ```
-![Scan to open this example](https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/qr/cs374-liascript-scope-chains-9.svg)
-https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/?student=1#cs374-liascript-scope-chains-9
+<!-- code-viz QR for cs374-liascript-scope-chains-9 -->
+![Scan to open this example on your phone](https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/qr/cs374-liascript-scope-chains-9.svg)
+[Open this example](https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/?student=1#cs374-liascript-scope-chains-9)
 ```
+
+With `--out files/qr` the image address becomes `<site>/files/qr/<id>.svg`.
 
 Use the SVG on slides (sharp at any size); use the PNG with `--scale 14` or more for print. A code
 should be at least about a quarter of the slide's height to scan from the back of a room.
@@ -393,6 +425,9 @@ The agents runner image itself is built with `--network host` (pip downloads), l
 - **Stable outputs.** Do not print times, dates, random numbers without a seed, or `id()` values in
   an example; each build then looks like a change. Seed randomness, or accept that the example is
   only checked for running.
+- **Setup cells.** Give a page's Setup cell its own label (it is usually worth stepping through
+  once), then label the cells after it with `setup=`. Keep setup cells free of slow or random work;
+  it runs before every dependent cell.
 - **Stable ids.** Never renumber ids that are on slides or QR codes; add new examples at new ids.
 - **Inputs.** Give stdin with `input="..."`; an example that waits for input without one times out.
 - **Test before class.** Open the student link on a phone before class; the first Edit and run
@@ -409,7 +444,8 @@ One JSON file per example, `viz/traces/<id>.json` (published gzipped as `.json.g
   "language": "python|scheme|lambda|flexbison|dot|c|cpp|...", "source": "the code",
   "steps": [ ... ],            kind-specific, below
   "stdout": "the whole output", "error": null or "message", "truncated": false,
-  "page": "_pages/...md", "line": 123, "viz": "...", "lang": "..."
+  "page": "_pages/...md", "line": 123, "viz": "...", "lang": "...",
+  "setup": {"ids": [...], "source": "the setup code"}     only with setup=
 }
 ```
 
@@ -470,6 +506,9 @@ published by the course's normal Pages build.
 | `build --check` fails after a deck edit | an example stopped running: fix the block, or `--update-expected` if the change is intended |
 | every build changes an output | the example prints a time or random value (section 13) |
 | a lambda variable B or K acts like a combinator | predefined names; add `-- free: B` or use lowercase |
+| `label --try` refuses a cell that uses an earlier cell's names | label the earlier cell first, then run `label` again (it adds `setup=`), or write `setup=<id>` by hand |
+| an example says "setup: NameError ..." | the setup chain is incomplete: add the missing cell's id to `setup=` |
+| the `--snippet` image is a local path | `--out` is not served by the site; use the default `viz/qr/` or a folder in the repo |
 | `code-viz qr` refuses an id | not a labeled example or in `viz/index.json`; check `code-viz catalog`, or `--force` |
 | SSH to `--host` asks for a password | key login and passwordless `sudo -n docker` are needed on that host |
 
@@ -481,6 +520,9 @@ published by the course's normal Pages build.
 - The 8 CS374 Mini-language blocks have no interpreter in the repo; Haskell and OCaml run whole (no
   steps) and none qualified yet; `cs374-tutorial-c-for-flex-bison-1` gives no gdb steps.
 - Large bison state graphs lay out slowly on phones.
+- The Python tracer keeps every object and frame it has drawn alive until the run ends (so their
+  numbers stay stable), so an example about `__del__` or weak references behaves differently under
+  the tracer.
 - Scheme frames are a model of the evaluator, not Guile itself; "approximate" marks a difference.
 - Live mode is one machine's Docker; it does not scale to a whole class running at once.
 - The CI path filter misses submodule-only changes (section 16).

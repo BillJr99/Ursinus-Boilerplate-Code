@@ -140,8 +140,19 @@
     return t.steps || [];
   }
 
+  // setup= examples: the earlier cells' code runs first, untraced; shown collapsed above the code
+  function showSetup(t) {
+    const su = t && t.setup;
+    $("setupbox").hidden = !su;
+    if (!su) return;
+    $("setupbox").open = false;
+    $("setupsum").textContent = `Setup code from ${(su.ids || []).join(", ") || "earlier cells"} (runs first, not stepped)`;
+    $("setupcode").textContent = su.source || "";
+  }
+
   function showTrace(t, meta) {
     state.trace = t; state.original = t; state.step = 0;
+    showSetup(t);
     $("reset").hidden = true;
     if (STUDENT) {
       $("edit").hidden = !canRunHere(t);
@@ -667,15 +678,17 @@
         $("runnote").textContent = "running ...";
         py.globals.set("cviz_src", code);
         const mod = { python: "pytrace", scheme: "schemetrace", lambda: "lambdatrace" }[lang];
-        nt = JSON.parse(py.runPython(`import json, ${mod}; json.dumps(${mod}.trace_source(cviz_src))`));
+        const setup = lang === "python" && t.setup ? t.setup.source : null;
+        py.globals.set("cviz_setup", setup);
+        nt = JSON.parse(py.runPython(`import json, ${mod}; json.dumps(${mod}.trace_source(cviz_src${lang === "python" ? ", setup=cviz_setup" : ""}))`));
       } else {
         $("runnote").textContent = "running on the server ...";
-        const r = await fetch("api/run", { method: "POST", body: JSON.stringify({ code, lang, viz: t.viz || t.kind, input: t.input || "" }) });
+        const r = await fetch("api/run", { method: "POST", body: JSON.stringify({ code, lang, viz: t.viz || t.kind, input: t.input || "", setup: (t.setup && t.setup.ids) || [] }) });
         if (!r.ok) throw new Error("no code-viz server here: start one with code-viz serve");
         nt = await r.json();
       }
     } catch (e) { $("runnote").textContent = "could not run: " + (e.message || e); return; }
-    Object.assign(nt, { id: t.id, viz: t.viz, lang: t.lang });
+    Object.assign(nt, { id: t.id, viz: t.viz, lang: t.lang, setup: t.setup });
     $("runnote").textContent = nt.error ? "ran with an error (see output)" : "done";
     state.trace = nt; state.step = 0; $("slider").max = Math.max(0, stepsOf(nt).length - 1);
     $("reset").hidden = false;

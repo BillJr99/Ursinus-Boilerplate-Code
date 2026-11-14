@@ -15,7 +15,8 @@ so a recording is made once and replayed by the viewer; it is never re-run in CI
 It works by patching the HTTP layer (urllib, requests, httpx) inside the program's process, so
 the example code is unchanged.
 
-Usage:  python3 agentrec.py PROGRAM.py > trace.json
+Usage:  python3 agentrec.py PROGRAM.py [--setup SETUP.py] > trace.json
+        --setup: a label's setup= code, run first; its output and model calls are not recorded.
 Environment: OLLAMA_HOST (default http://ollama:11434) is honoured by the examples themselves.
 
 PIPELINE
@@ -306,10 +307,21 @@ class Tee(io.TextIOBase):
         return len(s)
 
 
-def main(path):
+def main(path, setup=None):
     global PROG
     PROG = os.path.abspath(path)
-    patch()
+    g = {}
+    if setup:  # a label's setup= blocks: run first; their output and model calls are not recorded
+        old = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            patch()
+            exec(compile(open(setup, encoding="utf-8").read(), "<setup>", "exec"), g)
+        finally:
+            sys.stdout = old
+            EVENTS.clear()
+    else:
+        patch()
     src = open(path, encoding="utf-8").read()
     old = sys.stdout
     sys.stdout = Tee()
@@ -318,7 +330,8 @@ def main(path):
     sys.argv = [path] + shlex.split(os.environ.get("CVIZ_ARGS", ""))  # the label's args=, else none
     sys.setprofile(profiler)
     try:
-        runpy.run_path(path, run_name="__main__")
+        runpy.run_path(path, init_globals={k: v for k, v in g.items() if k not in ("__builtins__", "__name__")},
+                       run_name="__main__")
     except SystemExit:
         pass
     except BaseException as e:
@@ -333,4 +346,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[sys.argv.index("--setup") + 1] if "--setup" in sys.argv else None)

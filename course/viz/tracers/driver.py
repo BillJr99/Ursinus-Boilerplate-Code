@@ -33,6 +33,9 @@ LIMITS AND KNOWN PROBLEMS
     recursion (Y vs Z in CS374) end there, so the viewer shows the first 800 steps only.
   - Mini-language examples have no interpreter in the repo, so they are not runnable.
   - Haskell and OCaml run as plain programs only; no examples in CS357 or CS374 qualified yet.
+
+setup= (job["setup"], a file of the setup blocks' code): passed to pytrace and agentrec as --setup,
+run before plain Python by SETUP_WRAP, and copied into the trace as {"setup": {"ids", "source"}}.
 """
 import json
 import os
@@ -48,7 +51,7 @@ OUT = "/work/out"
 
 def sh(cmd, timeout, cwd=None, inp=None, env=None):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=inp,
-                          env=dict(os.environ, **(env or {})))
+                          env=dict(os.environ, PYTHONHASHSEED="0", **(env or {})))  # same set order every build
 
 
 def tracer(script, job, extra=()):
@@ -100,6 +103,8 @@ def plain(job):
             raise RuntimeError("mini interpreter binary not found after make")
     elif lang == "shell":
         r = sh(["bash", f], to, d, inp)
+    elif job.get("setup"):
+        r = sh([sys.executable, "-c", SETUP_WRAP, os.path.join(SRC, job["setup"]), f], to, d, inp)
     else:
         r = sh([sys.executable, f], to, d, inp)
     return {"kind": "plain", "stdout": r.stdout + (r.stderr if r.returncode else ""),
@@ -126,11 +131,32 @@ def c_trace(job):
             "truncated": data.get("truncated", False)}
 
 
+SETUP_WRAP = (  # plain Python with setup=: run the setup silently, then the program in the same globals
+    "import io, runpy, sys\n"
+    "g = {'__name__': '__main__'}\n"
+    "o, sys.stdout = sys.stdout, io.StringIO()\n"
+    "exec(compile(open(sys.argv[1]).read(), '<setup>', 'exec'), g)\n"
+    "sys.stdout = o\n"
+    "sys.argv = sys.argv[2:]\n"
+    "g.pop('__name__', None)\n"
+    "runpy.run_path(sys.argv[0], init_globals=g, run_name='__main__')\n")
+
+
 def one(job):
+    """Run one job and add, when the label has setup=, the setup's ids and code to the trace."""
+    t = _one(job)
+    if job.get("setup") and isinstance(t, dict):
+        t["setup"] = {"ids": job.get("setup_ids", []),
+                      "source": open(os.path.join(SRC, job["setup"]), encoding="utf-8").read()}
+    return t
+
+
+def _one(job):
     v, lang = job["viz"], job["lang"]
     ms = str(job.get("max_steps", 800))
+    st = ("--setup", os.path.join(SRC, job["setup"])) if job.get("setup") else ()
     if v == "env" and lang == "python":
-        return tracer("pytrace.py", job, ("--max-steps", ms))
+        return tracer("pytrace.py", job, ("--max-steps", ms) + st)
     if v == "env" and lang == "scheme":
         t = tracer("schemetrace.py", job, ("--max-steps", ms))
         path = os.path.join(SRC, job["file"])
@@ -151,7 +177,7 @@ def one(job):
     if v == "cast":
         return tracer("shellcast.py", job)
     if v == "agent":
-        return tracer("agentrec.py", job)
+        return tracer("agentrec.py", job, st)
     return plain(job)
 
 
