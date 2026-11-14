@@ -20,6 +20,12 @@ What lives here, so that code-viz itself only calls a few hooks:
                    entity defined nowhere above it)
   manifest(root, course, slug)  manifest entries for files under files/: MIPS programs (.s, .asm)
                    and VHDL designs (folders or .zip files holding .vhd files with a testbench)
+  script_blocks(lines, page, ...)  code embedded as <script type="syntaxhighlighter" class="brush: X">
+                   <![CDATA[ ... ]]></script>, the form the activity layout's models (YAML front matter)
+                   and some older pages use; returned in the same shape as fenced blocks, with
+                   "html": True so labels and links are written at the script's indentation and the
+                   link is an HTML <a> (models are raw HTML, not Markdown)
+  html_link(info, vid)  that link
 
 Suggestion rules (what `catalog` and `label` offer; `label --try` then keeps only what runs):
   sql   any complete SQLite statement block -> viz=sql (tables before and after every statement)
@@ -39,6 +45,7 @@ Suggestion rules (what `catalog` and `label` offer; `label --try` then keeps onl
 import os
 import re
 import sqlite3
+import textwrap
 import zipfile
 
 ALIASES = {"sqlite": "sql", "sqlite3": "sql", "javascript": "js", "node": "js", "nodejs": "js", "mjs": "js",
@@ -58,6 +65,62 @@ SQL_NAMES = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE(?:\s+IF\s+(?:NOT\s+)?E
 SQL_CREATES = re.compile(r"\bCREATE\s+(?:TEMP\w*\s+)?(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"`\[]?(\w+)", re.I)
 VHDL_ENTITY = re.compile(r"\bentity\s+(\w+)\s+is\b", re.I)
 VHDL_USES = re.compile(r"\b(?:entity\s+work\.(\w+)|component\s+(\w+))", re.I)
+
+
+SCRIPT_OPEN = re.compile(r'^(\s*)<script\s+type="syntaxhighlighter"\s+class="brush:\s*([A-Za-z0-9+#]+)[^"]*"\s*>\s*<!\[CDATA\[(.*)$')
+BRUSH = {"python": "python", "py": "python", "cpp": "cpp", "c": "c", "java": "java", "js": "js", "jscript": "js",
+         "javascript": "js", "sql": "sql", "mips": "mips", "asm": "mips", "bash": "shell", "shell": "shell", "vhdl": "vhdl",
+         "scheme": "scheme", "prolog": "prolog"}
+LOOKS_JAVA = re.compile(r"System\.out\.|\bpublic\s+(static\s+)?(void|int|double|String|boolean|class)\b|String\[\]")
+
+
+def script_blocks(lines, page, LABEL, parse_label, HEADING=None):
+    """Code embedded as <script type="syntaxhighlighter" class="brush: X"><![CDATA[ ... ]]></script>.
+
+    The code is dedented (its YAML indentation removed). brush: cpp holding Java (CS173 highlights Java
+    with the C++ brush) is read as Java. A label is an HTML comment on the line above the <script> line,
+    at any indentation."""
+    out, heading = [], ""
+    i = 0
+    while i < len(lines):
+        if HEADING is not None:
+            h = HEADING.match(lines[i])
+            if h:
+                heading = h.group(1)
+        m = SCRIPT_OPEN.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        ind, brush, first = m.group(1), m.group(2).lower(), m.group(3)
+        body, j = [], i
+        if "]]></script>" in first:
+            body.append(first.split("]]></script>")[0])
+        else:
+            if first.strip():
+                body.append(first)
+            j = i + 1
+            while j < len(lines) and "]]></script>" not in lines[j]:
+                body.append(lines[j])
+                j += 1
+            if j < len(lines):
+                tail = lines[j].split("]]></script>")[0]
+                if tail.strip():
+                    body.append(tail)
+        code = textwrap.dedent("\n".join(body).replace("\t", "    ")).strip("\n")
+        lang = BRUSH.get(brush, brush)
+        if lang == "cpp" and LOOKS_JAVA.search(code) and "#include" not in code:
+            lang = "java"
+        label = None
+        if i > 0 and LABEL.match(lines[i - 1]):
+            label = parse_label(LABEL.match(lines[i - 1]).group(1))
+        out.append({"start": i, "end": j, "lang": lang, "code": code, "label": label, "page": page,
+                    "indent": ind, "heading": heading, "html": True})
+        i = j + 1
+    return out
+
+
+def html_link(info, vid, mark):
+    return f'<a href="{info["url"]}/viz/#{vid}">Visualize this example</a> {mark}'
 
 
 def looks_mips(code):

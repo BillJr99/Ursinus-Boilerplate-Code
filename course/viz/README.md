@@ -33,16 +33,22 @@ its `code/` submodule, so a course runs it as `code/course/viz/code-viz` from th
 ```
 course/viz/
   code-viz        the command (this file): catalog, label, unlabel, run, build, serve, qr, readme
+  langs.py        the SQL, Java, JavaScript, MIPS and VHDL rules: fence names, runners, suggestions,
+                  setup= for SQL and VHDL, manifest entries for MIPS programs and VHDL designs
   runners/        one Dockerfile per toolchain: python, python-ml (PyTorch, CPU), scheme, c,
-                  flexbison, mini, haskell, prolog, ocaml, agents, shell, qr
+                  flexbison, mini, haskell, prolog, ocaml, agents, shell, qr, java, node, mips, vhdl
   tracers/        step tracers that run inside the containers: driver.py (dispatch), pytrace.py,
                   schemetrace.py, lambdatrace.py, cstep_gdb.py, bisontrace.py, automaton.py,
-                  agentrec.py, shellcast.py, cviz-repl.scm. pytrace, schemetrace, lambdatrace and
-                  automaton are pure Python, so the viewer also runs them in the browser (Pyodide).
+                  agentrec.py, shellcast.py, cviz-repl.scm, langrun.py (SQL, Java, JavaScript, MIPS
+                  and VHDL dispatch), sqltrace.py, mipstrace.py, JdiTrace.java. pytrace,
+                  schemetrace, lambdatrace, automaton, sqltrace and mipstrace are pure Python, so
+                  the viewer also runs them in the browser (Pyodide).
                   cviz_mplbackend.py draws figures headlessly, and pystubs/ holds the turtle,
                   ezgraphics and google.colab stand-ins (section 7, Figures).
   notebooks.py    Jupyter notebooks under files/ as a source of examples (section 4, Notebooks)
-  viewer/         the static viewer: index.html, viewer.js, viewer.css, figures.js (figures)
+  viewer/         the static viewer: index.html, viewer.js, viewer.css, figures.js (figures), and
+                  langs.js and langs.css (the SQL, MIPS and VHDL panels, and browser runs for SQL,
+                  MIPS and JavaScript)
   screenshot.py   headless-browser screenshots and render checks of a built viewer
   workflow.yml    the GitHub Actions template for course repos ("code-viz check")
   README.md       generated from this header by `code-viz readme --write`
@@ -94,12 +100,12 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 |---|---|
 | `id=` | unique name, and the viewer address `<site>/viz/#<id>` |
 | `viz=` | `env` (Python, Scheme), `lambda`, `c`, `bison`, `automaton`, `agent`, `cast` (shell), `plain` (output only) |
-| `lang=` | `python`, `scheme`, `lambda`, `c`, `cpp`, `haskell`, `prolog`, `ocaml`, `mini`, `shell` (default: the fence's language) |
+| `lang=` | `python`, `scheme`, `lambda`, `c`, `cpp`, `haskell`, `prolog`, `ocaml`, `mini`, `shell`, `sql`, `java`, `js`, `mips`, `vhdl` (default: the fence's language; `sqlite`, `javascript`, `node`, `vhd`, `s` and `spim` are read as these) |
 | `input="..."` | text given to the program on stdin, to a bison parser, or to an automaton |
 | `args="..."` | command line arguments (Python and agent examples) |
 | `timeout=N` | seconds for this example (default 20; agents 300) |
 | `max_steps=N` | step cap for this example (default 800) |
-| `setup=ID[,ID]` | Python only: run these earlier blocks' code first, untraced and silent (below) |
+| `setup=ID[,ID]` | Python, SQL and VHDL: run (or, for VHDL, analyze) these earlier blocks first, untraced and silent (below) |
 | `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
 | `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
@@ -170,6 +176,18 @@ line keeping its own ending (many course pages use CRLF, some only on some lines
 the ending of the line above it), and a page is only written when a label or link was added, so a
 `label` run that keeps nothing leaves the page byte for byte unchanged and one that labels changes
 only the added lines.
+
+**Embedded code blocks.** Code written as `<script type="syntaxhighlighter" class="brush: X">` with
+the code inside `<![CDATA[ ... ]]></script>` is read as a block too (langs.py `script_blocks`). That
+is the form the activity layout's POGIL models use in a page's YAML front matter (`info.models[].model`)
+and some older pages use in their body: CS173's Java (highlighted with `brush: cpp`), CS274's MIPS and
+C, CS170's and CS377's Python and SQL. The code is dedented (its YAML indentation removed); the brush
+names the language (`cpp` holding Java, with `System.out` or `public static` and no `#include`, is
+read as Java). The label is an HTML comment on the line above the `<script>` line and the link an
+HTML `<a ...>Visualize this example</a> <!-- code-viz link -->` on the line after `]]></script>`,
+both at the script's own indentation, so they stay inside the YAML literal block (`model: |`) and the
+front matter still parses; models are written into the page as raw HTML, so the link is HTML, not
+Markdown. Check a page after labeling with a YAML parser if it was hand-edited nearby.
 
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
 a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
@@ -388,7 +406,11 @@ address (its output looks changed on every build; see the tips in section 13).
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once and replayed |
 | cast | shell | a terminal replay of each command and its output |
-| plain | Haskell, Prolog, OCaml, Mini, Python that draws | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
+| sql | SQL (SQLite) | the statement just run, its result (columns and rows), how many rows it changed, and every table; a table the statement changed is shown before and after it |
+| java | Java | the call stack with each frame's local variables (and `this`), and the objects they reach (arrays as cells, ArrayList, the example's own objects with their fields) with arrows, line by line through the example's own classes (the Java debugger steps it); output only when stepping fails |
+| mips | MIPS assembly | the instruction just run, all 32 registers plus hi and lo (changed ones highlighted, decimal and hex), and memory words (static data with labels, heap, the stack words written), instruction by instruction; output checked against SPIM |
+| wave | VHDL | the testbench's signals over simulation time as a waveform (one-bit signals as high and low lines, vectors as labeled bus segments, U/X/Z marked), stepping through the times a signal changed, with every value at that time (GHDL simulates it) |
+| plain | Haskell, Prolog, OCaml, Mini, Python that draws, JavaScript, C that forks or starts threads | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
 
 **Figures.** Every Python example runs with matplotlib's backend set to `tracers/cviz_mplbackend.py`,
 so each figure the program shows (`plt.show()`) or leaves open at exit is saved as a PNG and kept in
@@ -405,6 +427,48 @@ a figure to open it full size. `label` suggests `viz=plain` for Python that uses
 seaborn, turtle or ezgraphics (stepping through it would draw Figure objects), and `runner=python-ml`
 with `timeout=120` for PyTorch. Edit and run in the browser does not capture figures; the recorded
 figures stay on screen.
+
+**The newer languages (langs.py).** How each one is found, run and shown:
+
+- **SQL.** Blocks fenced `sql` (or `sqlite`) that hold complete SQLite statements. `sqltrace.py` runs
+  them one statement at a time in an in-memory database and records every table after each one; a
+  failing statement records its error and the script goes on, as the sqlite3 shell does. Output is
+  the shell's default list mode (`a|b`). A block that uses tables an earlier block on the page creates
+  gets `setup=` with that block and the earlier blocks that change those tables, found by `label`
+  (an SQL block that uses a table no block above creates is not labeled). MySQL or PostgreSQL syntax
+  (`AUTO_INCREMENT`, `SERIAL`, `ENGINE=`) fails in SQLite, so `label --try` skips those blocks. Edit
+  and run works in the browser (Pyodide's sqlite3).
+- **Java.** Blocks fenced `java` with output (`System.out`) that do not read `System.in` or open a
+  window. A block with a class is compiled as it is (its file named after its public class); a block
+  of methods is wrapped in `public class Main { ... }`, and a block of statements in a `main` method
+  inside `Main`, with `import` lines moved above; the wrapper never changes what the code does, and
+  the viewer shows and highlights the block's own lines. `JdiTrace.java` runs it under the Java
+  debugger and records each line of the example's own classes (library code is not stepped); when
+  stepping fails the example runs output only and the trace notes why. Lab starter code with `TODO`
+  bodies does not compile, so `label --try` skips it. No browser run.
+- **JavaScript.** Blocks fenced `js`, `javascript` or `node` with `console.log` and no browser or
+  network objects (`document`, `window`, `fetch`, `$(`, a `require` of a package). They run in Node,
+  output only; Edit and run works in the browser (a Web Worker, stopped after 5 seconds).
+- **C.** As before (gdb), except that a program that calls `fork`, `exec*`, `pthread_create`,
+  `signal` or reads input runs output only: gdb stepping across processes and threads is unreliable.
+  Kernel-module code has no `main` and is never suggested.
+- **MIPS.** Blocks fenced `mips`, `asm`, `s` or with no language that use MIPS registers (`$t0`, `$sp`)
+  and have a `main:` label or a `syscall`, and `.s` and `.asm` files under `files/` (manifest entries,
+  section 4). `mipstrace.py` assembles and runs them (the SPIM and MARS subset: directives, the core
+  instructions, the usual pseudo-instructions and syscalls 1, 4, 5, 8 to 12, 17 and 34 to 36), with
+  MARS's memory layout (text at 0x00400000, data at 0x10010000, `$sp` 0x7fffeffc; SPIM puts `main` 0x24
+  higher). SPIM runs the same program in the runner as the reference: when the outputs differ the
+  trace is marked approximate and shows SPIM's. `input="5\n7"` answers read syscalls, one line each.
+  Edit and run works in the browser (Pyodide).
+- **VHDL.** Blocks fenced `vhdl` that declare an entity and an architecture, and folders or `.zip` files
+  under `files/` holding `.vhd` files with a testbench (manifest entries). GHDL imports every file (the
+  block, its `setup=` blocks, or the folder or zip), builds the testbench (the entity with no ports,
+  preferring a name ending in `tb`) with VHDL-2008, or VHDL-93c with the Synopsys libraries when 2008
+  fails, and runs it with `--vcd` to 2 us (`args="--stop-time=5us"` changes that). A testbench block
+  that instantiates an entity from an earlier block gets `setup=` with that block. A design block
+  without a testbench is only analyzed: its trace says it analyzed cleanly and that nothing is
+  simulated there (code-viz never writes a testbench). Lab fragments (a port list, one `generate`
+  statement) are not suggested. No browser run.
 
 ## 8. Reading the viewer
 
@@ -587,6 +651,10 @@ Steps by kind:
 - **c:** `{line, file, stack: [{func, line, vars: {name: {v|ptr|array|struct, type, addr}}}], out}`.
 - **agent:** `events` (also `steps`): `{t, line, type: model-call|embedding|retrieval|prompt|tool-call|print, model, messages|prompt, reply, tokens_in, tokens_out, seconds, vectors, dims, uses, name, arguments, text}`; a retrieval event has `{function, query, k, metric, passages: [{rank, score, id, source, text, top}]}`; plus `recorded`. A retrieval is caught when a function in the program returns, or holds in a local, a list of (score, passage) pairs sorted by score.
 - **cast:** `cast: {header, events: [[time, "o", text]]}` (asciinema v2).
+- **sql:** `{line, end, sql, kind: query|change|schema|other, result?: {columns, rows, more}, changes?, tables: {name: {columns, rows, more}}, changed: [names], error?, out}`.
+- **java** (kind `env`, language `java`): the Python step shape, `{line, event, stack: [{func, line, vars}], heap, out}`; a value is also `{"x": literal}` (true, false, null, 'c'); objects are `{t: array, class, items, more?}`, `{t: list, class: ArrayList, items}`, `{t: instance, class, attrs}` or `{t: <type>, repr}`. An output-only Java trace has kind `plain` and a `note`.
+- **mips:** `{line, pc, ins, regs: {index: value} (changed only; 32 is hi, 33 lo), mem: [[address, size, value]] (writes), out}`; plus top-level `regs0` (34 starting values), `labels`, `data: {base, hex}`, `reference_stdout` (SPIM's) and `approximate`.
+- **wave:** `steps: [{t, changed: [names]}]` (the times a signal changed, in femtoseconds), plus `signals: [{name, width, changes: [[t, value]]}]`, `end`, `top` (the testbench), `std`; `analyzed_only` when there was no testbench.
 
 ## 15. Where things run and safety
 
@@ -723,6 +791,14 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
   own key; recording them with Ollama would change the code students write), CS377's `pymongo` and
   `cassandra` examples (they connect to database servers the container does not have), and
   TensorFlow (too large for the runner).
+- Java: only the example's own classes are stepped, java.util collections other than ArrayList show
+  their type and size, threads other than main are not stepped, and programs that read `System.in`
+  run without input. Most CS173 blocks are lab starter code with `TODO` bodies that do not compile.
+- MIPS: floating-point (coprocessor 1) instructions and exceptions are not simulated; addresses in the
+  text segment follow MARS, not SPIM.
+- VHDL: most CS274 VHDL blocks are lab fragments (a port list, a `generate` loop) with no testbench,
+  so they are not examples; signals are recorded at the testbench's top level only.
+- SQL: SQLite's dialect only.
 
 ## 19. Output files
 

@@ -176,6 +176,18 @@ the ending of the line above it), and a page is only written when a label or lin
 `label` run that keeps nothing leaves the page byte for byte unchanged and one that labels changes
 only the added lines.
 
+**Embedded code blocks.** Code written as `<script type="syntaxhighlighter" class="brush: X">` with
+the code inside `<![CDATA[ ... ]]></script>` is read as a block too (langs.py `script_blocks`). That
+is the form the activity layout's POGIL models use in a page's YAML front matter (`info.models[].model`)
+and some older pages use in their body: CS173's Java (highlighted with `brush: cpp`), CS274's MIPS and
+C, CS170's and CS377's Python and SQL. The code is dedented (its YAML indentation removed); the brush
+names the language (`cpp` holding Java, with `System.out` or `public static` and no `#include`, is
+read as Java). The label is an HTML comment on the line above the `<script>` line and the link an
+HTML `<a ...>Visualize this example</a> <!-- code-viz link -->` on the line after `]]></script>`,
+both at the script's own indentation, so they stay inside the YAML literal block (`model: |`) and the
+front matter still parses; models are written into the page as raw HTML, so the link is HTML, not
+Markdown. Check a page after labeling with a YAML parser if it was hand-edited nearby.
+
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
 a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
 is a page to fix, not an example).
@@ -976,6 +988,8 @@ def blocks(root, page):
         if h:
             heading = h.group(1)
         i += 1
+    # code embedded as <script type="syntaxhighlighter"> (activity models, older pages): langs.py
+    out = sorted(out + LX.script_blocks(lines, page, LABEL, parse_label, HEADING), key=lambda b: b["start"])
     return out, lines
 
 
@@ -1459,6 +1473,11 @@ def cmd_catalog(a):
     return 0
 
 
+def block_link(info, b, vid):
+    """The Visualize link for a block: Markdown, or HTML for code embedded in a <script> (models are HTML)."""
+    return LX.html_link(info, vid, LINK_MARK) if b.get("html") else link_line(info, vid)
+
+
 def link_line(info, vid):
     return f"[Visualize this example]({info['url']}/viz/#{vid}) {LINK_MARK}"
 
@@ -1467,6 +1486,8 @@ def link_slot(lines, b):
     """Where a block's Visualize link goes: the line after its closing fence, past any LiaScript
     @-macro lines (@LIA.eval ...) and <script> lines that belong to the block."""
     after = b["end"] + 1
+    if b.get("html"):
+        return after   # an embedded <script> block: right after its ]]></script> line
     while after < len(lines):
         t = lines[after].strip()
         if t.startswith("@"):
@@ -1489,7 +1510,7 @@ def cmd_links(a):
     for page in pages(root, a.page):
         bs, lines = blocks(root, page)
         # a block is linked when its own link is anywhere on the page (it may sit a line lower)
-        linked = {vid for l in lines if LINK_MARK in l for vid in re.findall(r"/viz/#([\w.-]+)\)", l)}
+        linked = {vid for l in lines if LINK_MARK in l for vid in re.findall(r"/viz/#([\w.-]+)[)\"]", l)}
         todo = [b for b in bs if b["label"] and b["label"].get("id") and b["label"]["id"] not in linked]
         if not todo:
             continue
@@ -1499,7 +1520,7 @@ def cmd_links(a):
         if a.check:
             continue
         for b in sorted(todo, key=lambda b: -b["start"]):   # bottom-up keeps line numbers valid
-            lines.insert(link_slot(lines, b), b.get("indent", "") + link_line(info, b["label"]["id"]))
+            lines.insert(link_slot(lines, b), b.get("indent", "") + block_link(info, b, b["label"]["id"]))
         write_page(root, page, lines)
     verb = "missing" if a.check else "added"
     missing += NB.add_links(root, info, pages(root, a.page), LINK_MARK, check=a.check)  # notebook examples
@@ -1646,7 +1667,7 @@ def cmd_label(a):
                 if a.links:
                     after = link_slot(lines, b)
                     if not (after < len(lines) and LINK_MARK in lines[after]):
-                        lines.insert(after, b.get("indent", "") + link_line(info, lab["id"]))
+                        lines.insert(after, b.get("indent", "") + block_link(info, b, lab["id"]))
                 lines.insert(b["start"], f"{b.get('indent', '')}<!-- run: {fields} -->")
             if keep:
                 write_page(root, page, lines)
@@ -1712,10 +1733,9 @@ def cmd_unlabel(a):
         bs, lines = blocks(root, page)
         hits = [b for b in bs if b["label"] and b["label"].get("id") in gone]
         for b in sorted(hits, key=lambda b: -b["start"]):
-            after = b["end"] + 1
-            while after < len(lines) and (lines[after].strip().startswith("@") or lines[after].strip().startswith("<script")):
-                after += 1
-            if after < len(lines) and LINK_MARK in lines[after] and f"#{b['label']['id']})" in lines[after]:
+            after = link_slot(lines, b)
+            vid = b["label"]["id"]
+            if after < len(lines) and LINK_MARK in lines[after] and (f"#{vid})" in lines[after] or f'#{vid}"' in lines[after]):
                 del lines[after]
             del lines[b["start"] - 1]
             print(f"{page}: unlabeled {b['label']['id']}")
