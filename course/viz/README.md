@@ -100,7 +100,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | field | meaning |
 |---|---|
 | `id=` | unique name, and the viewer address `<site>/viz/#<id>` |
-| `viz=` | `env` (Python, Scheme), `lambda`, `c`, `bison`, `automaton`, `agent`, `cast` (shell), `plain` (output only) |
+| `viz=` | `env` (Python, Scheme), `lambda`, `c`, `bison`, `automaton`, `agent`, `cast` (shell), `plain` (output only), `show` (display only: never run, Explain mode only, section 22), `session` (a recorded terminal session, Simulate mode, section 23) |
 | `lang=` | `python`, `scheme`, `lambda`, `c`, `cpp`, `haskell`, `prolog`, `ocaml`, `mini`, `shell`, `sql`, `java`, `js`, `mips`, `vhdl` (default: the fence's language; `sqlite`, `javascript`, `node`, `vhd`, `s` and `spim` are read as these) |
 | `input="..."` | text given to the program on stdin, to a bison parser, or to an automaton |
 | `args="..."` | command line arguments (Python and agent examples) |
@@ -117,6 +117,13 @@ page's file name lowercased with other characters turned into hyphens (`liascrip
 and the next free number on that page (`cs374-liascript-scope-chains-3`). Ids written by hand can be
 anything unique (older CS357 ones look like `cs357-tut-llmjudges-3`). Keep an id once students have its link or QR code; renumbering breaks them. Manifest entries
 use the ids written in `viz/manifest.json`.
+
+**Display-only blocks (`viz=show`).** Code that cannot run in a code-viz runner (it needs API keys,
+accounts, the network or a GPU) can still be explained. A block labeled `viz=show` is never run,
+never checked for output and skipped by `build --check`; it has no Run mode, only Explain (its tour
+carries the code, section 22), and its link reads "Explain this example". `label --show` and
+`catalog --show` suggest it for blocks in a code language, of three or more lines, that no runner
+takes; without `--show` labeling is unchanged.
 
 **Links.** `label --links` writes the "Visualize this example" line, marked `<!-- code-viz link -->`
 so `unlabel` can find it; `code-viz links` adds it later to labeled blocks that have none (section 5). It goes after any LiaScript run macro (`@LIA.eval(...)`, `@Pyodide.eval`)
@@ -979,6 +986,10 @@ A build-up tour moves through stages: each stage is its own labeled block on the
 chained with `setup=` so each one runs. From a `stage` step on, line numbers refer to that stage's
 code, and `run` steps use that stage's trace.
 
+A tour of a display-only example (`viz=show`) works the same way, without `run` steps: there is no
+trace. The published tour carries the code (`code`, `lang`) and each stage's code (`stages`), so the
+Explain view never needs a trace to show the code.
+
 `reviewed` is false until Bill has read the tour; the viewer marks an unreviewed tour with a small
 "draft" badge, and `source` records who drafted it.
 
@@ -1029,7 +1040,15 @@ A scenario (format version 1, `schemas/session.schema.json`):
 - `files` are written into the work folder first, and `watch` folders have their file listing
   snapshotted after each command;
 - `branches` are "what if" variants: run the first `after` main-line steps, then these commands, and
-  record them too, so the class can see what goes wrong.
+  record them too, so the class can see what goes wrong;
+- `shell` (optional) runs the commands in a container from a pinned image instead of the sandbox's
+  own shell, which has only the Docker CLI. Use it for terminal sessions that need compilers or
+  other tools (`{"image": "gcc:14", "setup": ["apt-get update", "apt-get install -y flex bison"]}`):
+  the commands run unchanged, in order, in one shell, with the work folder as the working directory.
+  `setup` commands are baked into a derived image when recording (with network access) and are not
+  recorded; the commands then run under the scenario's `network` policy. `DOCKER_HOST` points at the
+  sandbox's Docker daemon, so `docker` commands in such a session still work when the image has the
+  Docker CLI.
 
 `code-viz record <id>` runs the scenario on the recording host (minipc, with `--host`) inside a
 throwaway Docker-in-Docker sandbox: a pinned `docker:dind` container with its own Docker daemon, so

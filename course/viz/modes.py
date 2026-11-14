@@ -330,9 +330,14 @@ def check_session(doc, recording=None):
 
 # ---- publishing into viz/ (code-viz build) -----------------------------------------------------------
 
-def publish(root, codes, session_blocks, index_entries):
+def publish(root, codes, session_blocks, index_entries, meta=None):
     """Write valid tours to viz/tours/, keep recordings, and add "modes" to index entries.
-    Returns (problems, tours_written). Writes nothing when the repo has no tours and no sessions."""
+    Returns (problems, tours_written). Writes nothing when the repo has no tours and no sessions.
+
+    A published tour also carries the code it explains (`code`, `lang`) and the code of each stage
+    (`stages: {id: {code, lang}}`), so Explain mode works without a Run trace: display-only examples
+    (viz=show) have none. `meta` maps example id -> {viz, lang, page, line, page_url}."""
+    meta = meta or {}
     tours = load_tours(root, codes)
     sessions = session_sources(root, session_blocks)
     problems = []
@@ -346,6 +351,10 @@ def publish(root, codes, session_blocks, index_entries):
             continue
         os.makedirs(out_dir, exist_ok=True)
         fn = f"{vid}--{name}.json" if name else f"{vid}.json"
+        t = dict(t, code=codes.get(vid, ""), lang=(meta.get(vid) or {}).get("lang", ""))
+        stages = {s["stage"] for s in t["steps"] if s.get("stage")}
+        if stages:
+            t["stages"] = {sid: {"code": codes.get(sid, ""), "lang": (meta.get(sid) or {}).get("lang", "")} for sid in sorted(stages)}
         text = json.dumps(t, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
         dst = os.path.join(out_dir, fn)
         if not (os.path.exists(dst) and open(dst, encoding="utf-8").read() == text):
@@ -367,9 +376,17 @@ def publish(root, codes, session_blocks, index_entries):
         if rec is not None and not [e for e in errs if not e.startswith("stale")]:
             recorded.add(vid)
         problems += [f"session {vid}: {e}" for e in errs]
+    # Display-only examples (viz=show) have no trace and no build job: give the ones with a tour an
+    # index entry of their own, Explain only.
+    have = {e["id"] for e in index_entries}
+    for vid in sorted(written):
+        m = meta.get(vid) or {}
+        if vid not in have and m.get("viz") == "show":
+            index_entries.append({"id": vid, "viz": "show", "lang": m.get("lang", ""), "page": m.get("page", ""),
+                                  "line": m.get("line", 0), "page_url": m.get("page_url", ""), "error": None, "steps": 0})
     for e in index_entries:
         e.pop("tours", None)
-        modes = ["run"] if e.get("viz") != "session" else []
+        modes = ["run"] if e.get("viz") not in ("session", "show") else []
         if e["id"] in written:
             modes.append("explain")
             names = sorted(written[e["id"]])

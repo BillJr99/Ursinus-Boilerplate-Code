@@ -99,7 +99,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | field | meaning |
 |---|---|
 | `id=` | unique name, and the viewer address `<site>/viz/#<id>` |
-| `viz=` | `env` (Python, Scheme), `lambda`, `c`, `bison`, `automaton`, `agent`, `cast` (shell), `plain` (output only) |
+| `viz=` | `env` (Python, Scheme), `lambda`, `c`, `bison`, `automaton`, `agent`, `cast` (shell), `plain` (output only), `show` (display only: never run, Explain mode only, section 22), `session` (a recorded terminal session, Simulate mode, section 23) |
 | `lang=` | `python`, `scheme`, `lambda`, `c`, `cpp`, `haskell`, `prolog`, `ocaml`, `mini`, `shell`, `sql`, `java`, `js`, `mips`, `vhdl` (default: the fence's language; `sqlite`, `javascript`, `node`, `vhd`, `s` and `spim` are read as these) |
 | `input="..."` | text given to the program on stdin, to a bison parser, or to an automaton |
 | `args="..."` | command line arguments (Python and agent examples) |
@@ -116,6 +116,13 @@ page's file name lowercased with other characters turned into hyphens (`liascrip
 and the next free number on that page (`cs374-liascript-scope-chains-3`). Ids written by hand can be
 anything unique (older CS357 ones look like `cs357-tut-llmjudges-3`). Keep an id once students have its link or QR code; renumbering breaks them. Manifest entries
 use the ids written in `viz/manifest.json`.
+
+**Display-only blocks (`viz=show`).** Code that cannot run in a code-viz runner (it needs API keys,
+accounts, the network or a GPU) can still be explained. A block labeled `viz=show` is never run,
+never checked for output and skipped by `build --check`; it has no Run mode, only Explain (its tour
+carries the code, section 22), and its link reads "Explain this example". `label --show` and
+`catalog --show` suggest it for blocks in a code language, of three or more lines, that no runner
+takes; without `--show` labeling is unchanged.
 
 **Links.** `label --links` writes the "Visualize this example" line, marked `<!-- code-viz link -->`
 so `unlabel` can find it; `code-viz links` adds it later to labeled blocks that have none (section 5). It goes after any LiaScript run macro (`@LIA.eval(...)`, `@Pyodide.eval`)
@@ -978,6 +985,10 @@ A build-up tour moves through stages: each stage is its own labeled block on the
 chained with `setup=` so each one runs. From a `stage` step on, line numbers refer to that stage's
 code, and `run` steps use that stage's trace.
 
+A tour of a display-only example (`viz=show`) works the same way, without `run` steps: there is no
+trace. The published tour carries the code (`code`, `lang`) and each stage's code (`stages`), so the
+Explain view never needs a trace to show the code.
+
 `reviewed` is false until Bill has read the tour; the viewer marks an unreviewed tour with a small
 "draft" badge, and `source` records who drafted it.
 
@@ -1028,7 +1039,15 @@ A scenario (format version 1, `schemas/session.schema.json`):
 - `files` are written into the work folder first, and `watch` folders have their file listing
   snapshotted after each command;
 - `branches` are "what if" variants: run the first `after` main-line steps, then these commands, and
-  record them too, so the class can see what goes wrong.
+  record them too, so the class can see what goes wrong;
+- `shell` (optional) runs the commands in a container from a pinned image instead of the sandbox's
+  own shell, which has only the Docker CLI. Use it for terminal sessions that need compilers or
+  other tools (`{"image": "gcc:14", "setup": ["apt-get update", "apt-get install -y flex bison"]}`):
+  the commands run unchanged, in order, in one shell, with the work folder as the working directory.
+  `setup` commands are baked into a derived image when recording (with network access) and are not
+  recorded; the commands then run under the scenario's `network` policy. `DOCKER_HOST` points at the
+  sandbox's Docker daemon, so `docker` commands in such a session still work when the image has the
+  Docker CLI.
 
 `code-viz record <id>` runs the scenario on the recording host (minipc, with `--host`) inside a
 throwaway Docker-in-Docker sandbox: a pinned `docker:dind` container with its own Docker daemon, so
@@ -1788,6 +1807,8 @@ def cmd_catalog(a):
             elif deps:
                 # labeled deps by id; an unlabeled one by its line (label it first)
                 s = dict(s, setup=",".join(d["label"]["id"] if d["label"] else f"line{d['start'] + 1}" for d in deps))
+        if not s and getattr(a, "show", False) and show_candidate(b):
+            s = {"viz": "show", "lang": b["lang"]}   # display only (catalog --show)
         if s:
             sugg.append((b, s))
     counts = {}
@@ -1824,13 +1845,31 @@ def cmd_catalog(a):
     return 0
 
 
+# Link text and address by label kind: display-only blocks open in Explain mode, sessions in
+# Simulate mode, everything else in the default (Run) view (sections 4, 21 to 23).
+LINK_KIND = {"show": ("Explain this example", "?mode=explain"), "session": ("Simulate this session", "?mode=simulate")}
+
+
+# Fence languages that are not code to explain (prose, output, diagrams), for label --show.
+NOT_CODE = {"", "text", "txt", "plaintext", "none", "output", "mermaid", "math", "latex", "tex", "md", "markdown",
+            "csv", "tsv", "log", "ascii", "diagram"}
+
+
+def show_candidate(b):
+    """A block worth a display-only label: a code language, and at least three non-blank lines."""
+    return (b.get("lang") or "").lower() not in NOT_CODE and len([l for l in b["code"].split("\n") if l.strip()]) >= 3
+
+
 def block_link(info, b, vid):
     """The Visualize link for a block: Markdown, or HTML for code embedded in a <script> (models are HTML)."""
-    return LX.html_link(info, vid, LINK_MARK) if b.get("html") else link_line(info, vid)
+    text, q = LINK_KIND.get((b.get("label") or {}).get("viz"), ("Visualize this example", ""))
+    if b.get("html"):
+        return f'<a href="{info["url"]}/viz/{q}#{vid}">{text}</a> {LINK_MARK}'
+    return link_line(info, vid, text, q)
 
 
-def link_line(info, vid):
-    return f"[Visualize this example]({info['url']}/viz/#{vid}) {LINK_MARK}"
+def link_line(info, vid, text="Visualize this example", q=""):
+    return f"[{text}]({info['url']}/viz/{q}#{vid}) {LINK_MARK}"
 
 
 def link_slot(lines, b):
@@ -1861,7 +1900,7 @@ def cmd_links(a):
     for page in pages(root, a.page):
         bs, lines = blocks(root, page)
         # a block is linked when its own link is anywhere on the page (it may sit a line lower)
-        linked = {vid for l in lines if LINK_MARK in l for vid in re.findall(r"/viz/#([\w.-]+)[)\"]", l)}
+        linked = {vid for l in lines if LINK_MARK in l for vid in re.findall(r"/viz/(?:\?[^#)\"]*)?#([\w.-]+)[)\"]", l)}
         todo = [b for b in bs if b["label"] and b["label"].get("id") and b["label"]["id"] not in linked]
         if not todo:
             continue
@@ -1996,6 +2035,8 @@ def cmd_label(a):
                         mini_interp[page] = bool(interp_files(root, page))
                     if mini_interp[page]:
                         s = dict(s, interp="page")
+                if not s and getattr(a, "show", False) and show_candidate(b):
+                    s = {"viz": "show", "lang": b["lang"]}   # display only: Explain mode (label --show)
                 if not s or (a.lang and s["lang"] != a.lang) or (a.viz and s["viz"] != a.viz):
                     continue
                 if (s["viz"] == "agent") != bool(a.agents):
@@ -2013,7 +2054,7 @@ def cmd_label(a):
             keep = cands
             if docker:
                 src = tempfile.mkdtemp(prefix="code-viz-try-")
-                jobs = [job_for(b, root, src, lookup) for b in cands]
+                jobs = [job_for(b, root, src, lookup) for b in cands if b["label"]["viz"] != "show"]
                 traces = run_jobs(jobs, docker, src)
                 def good(b):
                     t = traces[b["label"]["id"]]
@@ -2024,8 +2065,8 @@ def cmd_label(a):
                     if b["label"]["viz"] == "env" and b["label"]["lang"] == "scheme" and t.get("approximate"):
                         return bool(t.get("steps"))
                     return True
-                keep = [b for b in cands if good(b)]
-                report_failures(a, cands, keep, traces)
+                keep = [b for b in cands if b["label"]["viz"] == "show" or good(b)]
+                report_failures(a, [b for b in cands if b["label"]["viz"] != "show"], keep, traces)
                 kept = {b["label"]["id"] for b in keep} | {i for i, x in block_lookup(root).items()}
                 keep = [b for b in keep if all(x in kept for x in (b["label"].get("setup") or "").split(",") if x)]
                 retire_path(src)
@@ -2230,6 +2271,20 @@ def example_codes(root):
     return {b["label"]["id"]: b["code"] for b in all_blocks(root) if b.get("label") and b["label"].get("id")}
 
 
+def example_meta(root, info):
+    """id -> {viz, lang, page, line, page_url} of every labeled example, for publishing tours."""
+    out = {}
+    for b in all_blocks(root):
+        lab = b.get("label") or {}
+        if not lab.get("id"):
+            continue
+        page = b["page"]
+        url = f"{info['url']}/{os.path.splitext(page.replace('_pages/', ''))[0]}" if page.startswith("_pages") else ""
+        out[lab["id"]] = {"viz": lab.get("viz", "plain"), "lang": LANG_ALIASES.get(lab.get("lang") or b["lang"], lab.get("lang") or b["lang"]),
+                          "page": page, "line": b["start"] + 1, "page_url": url}
+    return out
+
+
 def session_blocks(root):
     """[(id, title, page, code, label)] for shell blocks labeled viz=session (section 23)."""
     return [(b["label"]["id"], b["label"].get("title") or "", b["page"], b["code"], b["label"])
@@ -2315,7 +2370,7 @@ def write_site(root, info, traces, jobs, a):
     examples = list(index.values())
     # Explain and Simulate modes (sections 21 to 23): publish valid tours, keep recordings, and list
     # each example's modes. A repo with no codeviz/ sources and no sessions is left exactly as before.
-    problems, _ = MD.publish(root, example_codes(root), session_blocks(root), examples)
+    problems, _ = MD.publish(root, example_codes(root), session_blocks(root), examples, example_meta(root, info))
     for p in problems[:40]:
         print(f"  {p}")
     examples = sorted(examples, key=lambda e: (e["page"], e["line"]))
@@ -2339,8 +2394,8 @@ def collect(root, info, a, src):
             break
         if lab.get("viz") == "agent" and not getattr(a, "record_agents", False):
             continue  # recorded on minipc, committed, replayed
-        if lab.get("viz") == "session":
-            continue  # a Simulate-mode scenario: recorded by `code-viz record`, never run by build
+        if lab.get("viz") in ("session", "show"):
+            continue  # session: recorded by `code-viz record`; show: display only (Explain mode), never run
         jobs.append(job_for(b, root, src))
     if getattr(a, "manifest_only", False):
         jobs = []
@@ -2610,7 +2665,9 @@ def main():
     ap.add_argument("--keep-images", action="store_true", help="keep runner images after the run")
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("catalog", help="list examples and suggest labels")
-    c.add_argument("--page"); c.add_argument("-v", "--verbose", action="store_true"); c.set_defaults(fn=cmd_catalog)
+    c.add_argument("--page"); c.add_argument("-v", "--verbose", action="store_true")
+    c.add_argument("--show", action="store_true", help="also suggest viz=show (display only) for blocks that cannot run")
+    c.set_defaults(fn=cmd_catalog)
     l = sub.add_parser("label", help="apply suggested labels")
     l.add_argument("--page"); l.add_argument("--lang"); l.add_argument("--viz")
     l.add_argument("--try", dest="try_run", action="store_true", help="run candidates first; label only those that run")
@@ -2619,6 +2676,7 @@ def main():
     l.add_argument("--ollama-network", help="Docker network with an Ollama container, for --try on agent examples")
     l.add_argument("--report", help="with --try: append the candidates that did not run cleanly (id, page, error) to this JSON-lines file")
     l.add_argument("--notebooks", action="store_true", help="label cells of the notebooks under files/ (viz/notebooks.json) instead of pages")
+    l.add_argument("--show", action="store_true", help="also label blocks that cannot run as viz=show (display only, Explain mode)")
     l.set_defaults(fn=cmd_label)
     r = sub.add_parser("run", help="run one example (id or file) and write its trace")
     r.add_argument("target"); r.add_argument("--viz"); r.add_argument("--input"); r.add_argument("--id")

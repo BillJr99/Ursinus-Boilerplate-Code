@@ -31,7 +31,17 @@
         "files": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Files written into the session's work folder before the first command (path -> content)."},
         "workdir": {"type": "string", "default": "/work"},
         "watch": {"type": "array", "items": {"type": "string"}, "description": "Folders whose file listing is snapshotted after each command (for mounts)."},
-        "timeout": {"type": "integer", "minimum": 1, "default": 120, "description": "Seconds per command."}
+        "timeout": {"type": "integer", "minimum": 1, "default": 120, "description": "Seconds per command."},
+        "shell": {
+          "type": "object",
+          "required": ["image"],
+          "additionalProperties": false,
+          "description": "Run the commands in a shell inside a container from this image instead of the sandbox's own shell (which has only the Docker CLI). The commands run unchanged, in order, in one shell, with the work folder as the working directory. The setup commands are baked into a derived image when recording (with network), then the commands run under the scenario's network policy. DOCKER_HOST points at the sandbox's Docker daemon, so docker commands still work.",
+          "properties": {
+            "image": {"type": "string", "pattern": "^[^:@\\s]+[:@][^\\s]+$", "description": "A pinned image (name:tag or name@sha256:...), never 'latest'."},
+            "setup": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Commands run once when the image is built (for example apt-get install). Not recorded and not shown."}
+          }
+        }
       }
     },
     "recorded": {
