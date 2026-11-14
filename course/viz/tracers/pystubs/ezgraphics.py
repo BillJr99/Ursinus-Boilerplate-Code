@@ -6,8 +6,8 @@ Full manual: the header of code-viz (`code-viz readme`, or README.md), section 7
 tracers/driver.py puts /viz/tracers/pystubs first on PYTHONPATH, so `from ezgraphics import
 GraphicsWindow` in an example loads this file. Each GraphicsWindow records what is drawn on its
 canvas and, at win.wait(), win.close() or when the program ends, saves it as one figure through
-cviz_mplbackend.save_figure (win.pause() saves a figure too, so an animation shows as frames, up to
-the figure cap). Coordinates are canvas pixels with y growing downward, as in ezgraphics.
+cviz_mplbackend.save_figure (win.pause() saves a frame at pauses 1, 2, 4, 8, ... while the figure cap
+allows, keeping the last slot for the final canvas, so an animation shows as frames and stays fast). Coordinates are canvas pixels with y growing downward, as in ezgraphics.
 An endless animation is stopped after CVIZ_DRAW_MAX drawing calls (default 1000): every window is
 saved as it is then, a note is printed, and the program ends normally. Supported on the canvas: setFill, setOutline, setColor, setLineWidth, setBackground, setTextFont
 (kept but not applied), drawRect/drawRectangle, drawOval, drawLine, drawPoint, drawPolygon,
@@ -164,7 +164,13 @@ class GraphicsWindow:
         self._saved += 1
 
     def pause(self, *a):
-        self._save()
+        # An animation pauses every frame: save frames at pauses 1, 2, 4, 8, ... while figures can
+        # still be kept, so the frames show the motion and a long loop stays fast.
+        self._pauses = getattr(self, "_pauses", 0) + 1
+        n = self._pauses
+        import cviz_mplbackend
+        if n & (n - 1) == 0 and cviz_mplbackend._count[0] < int(os.environ.get("CVIZ_FIG_MAX", "8")) - 1:
+            self._save()
 
     def wait(self):
         if self._open:

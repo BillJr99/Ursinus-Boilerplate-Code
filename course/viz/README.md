@@ -466,7 +466,8 @@ the printed output reaches the point where the program showed it; in plain trace
 `import turtle` and `import ezgraphics` load headless stand-ins from `tracers/pystubs`: the turtle
 stand-in records the drawing and saves it at `done()` or exit; the ezgraphics stand-in records each
 `GraphicsWindow` canvas (setFill, setOutline, drawRect/drawRectangle, drawOval, drawLine,
-drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
+drawPolygon, drawText, drawArc) and saves it at `wait()` or exit, and at `pause()` number 1, 2, 4,
+8, ... while the figure cap allows (frames of an animation), with y
 growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
 example fails visibly and is not labeled. An endless animation (`while True:` drawing frames) is
 stopped after CVIZ_DRAW_MAX drawing calls or moves (default 1000): the canvas is saved as it is then,
