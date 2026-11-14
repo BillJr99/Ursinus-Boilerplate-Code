@@ -34,7 +34,8 @@ Suggestion rules (what `catalog` and `label` offer; `label --try` then keeps onl
         stepped with the Java debugger; falls back to output only where stepping fails)
   js    a block with console.log and no browser or network objects (document, window, fetch, $,
         require of a package) -> viz=plain, lang=js
-  c     code-viz's own C rule, but a program that calls fork, exec*, pthread_create, signal or
+  c     code-viz's own C rule (plus blocks fenced without a language that have #include and
+        int main), but a program that calls fork, exec*, pthread_create, signal or
         reads input runs output only (viz=plain), since gdb stepping across processes and threads
         is unreliable
   mips  a block (fenced as mips, asm, s or with no language) with MIPS registers ($t0, $sp, ...)
@@ -150,6 +151,9 @@ def suggest(b, base):
         return {"viz": "plain", "lang": "js"}
     if lang == "vhdl" and VHDL_ENTITY.search(code) and (re.search(r"\barchitecture\b", code, re.I)):
         return {"viz": "wave", "lang": "vhdl"}
+    if lang in ("", "text", "none") and "#include" in code and re.search(r"\bint\s+main\s*\(", code):
+        # a C program fenced without a language (CS376 has many)
+        base = {"viz": "c", "lang": "cpp" if re.search(r"#include\s*<(iostream|vector|string)>|std::", code) else "c"}
     if base and base.get("viz") == "c" and C_MULTI.search(code):
         return {"viz": "plain", "lang": base["lang"]}
     return base
@@ -234,4 +238,9 @@ def manifest(root, course, slug):
         if vhd and _vhdl_has_testbench([open(os.path.join(dp, f), errors="replace").read() for f in vhd]):
             out.append({"id": f"{course}-{slug(rel.replace('files/', '', 1).replace('/', '-'))}", "viz": "wave",
                         "lang": "vhdl", "file": rel, "input": ""})
-    return out
+    seen, uniq = set(), []
+    for e in out:          # the same file name in two folders (CS274's replit/ and replits/): first one only
+        if e["id"] not in seen:
+            seen.add(e["id"])
+            uniq.append(e)
+    return uniq
