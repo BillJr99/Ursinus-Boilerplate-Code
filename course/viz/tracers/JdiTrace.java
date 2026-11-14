@@ -170,7 +170,10 @@ public class JdiTrace {
         return s;
     }
 
-    static String simple(String n) { int i = n.lastIndexOf('.'); return i < 0 ? n : n.substring(i + 1); }
+    static String simple(String n) {   // java.util.ArrayList -> ArrayList; Outer$Node (an inner class) -> Node
+        int i = Math.max(n.lastIndexOf('.'), n.lastIndexOf('$'));
+        return i < 0 ? n : n.substring(i + 1);
+    }
 
     static Map<String, Object> lit(String k, Object v) { Map<String, Object> m = new LinkedHashMap<>(); m.put(k, v); return m; }
 
