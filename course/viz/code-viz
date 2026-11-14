@@ -151,6 +151,9 @@ code-viz catalog --page _pages/Activities/liascript-scope-chains.md
 code-viz catalog -v                     # also list every suggestion with its page and line
 ```
 
+`catalog` writes `viz/catalog.json` (every labeled example and suggestion) only when run without
+`--page`, so a one-page look never shrinks it.
+
 ### label
 
 Applies the suggested labels. Options: `--page`, `--lang`, `--viz` (limit what is labeled), `--try`
@@ -1056,10 +1059,11 @@ def cmd_catalog(a):
         print(f"config blocks that do not parse: {len(invalid)}")
         for x in invalid[:10]:
             print("  " + x)
-    os.makedirs(os.path.join(root, "viz"), exist_ok=True)
-    json.dump({"labeled": [{"id": b["label"]["id"], "page": b["page"], "line": b["start"] + 1} for b in labeled],
-               "suggested": [{"page": b["page"], "line": b["start"] + 1, **s} for b, s in sugg],
-               "invalid_config": invalid}, open(os.path.join(root, "viz", "catalog.json"), "w"), indent=1)
+    if not a.page:  # viz/catalog.json is the whole site's catalog; a --page run must not shrink it
+        os.makedirs(os.path.join(root, "viz"), exist_ok=True)
+        json.dump({"labeled": [{"id": b["label"]["id"], "page": b["page"], "line": b["start"] + 1} for b in labeled],
+                   "suggested": [{"page": b["page"], "line": b["start"] + 1, **s} for b, s in sugg],
+                   "invalid_config": invalid}, open(os.path.join(root, "viz", "catalog.json"), "w"), indent=1)
     if a.verbose:
         for b, s in sugg:
             print(f"  {b['page']}:{b['start'] + 1}  {s['viz']} {s['lang']}" + (f"  setup={s['setup']}" if s.get("setup") else ""))

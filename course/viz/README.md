@@ -152,6 +152,9 @@ code-viz catalog --page _pages/Activities/liascript-scope-chains.md
 code-viz catalog -v                     # also list every suggestion with its page and line
 ```
 
+`catalog` writes `viz/catalog.json` (every labeled example and suggestion) only when run without
+`--page`, so a one-page look never shrinks it.
+
 ### label
 
 Applies the suggested labels. Options: `--page`, `--lang`, `--viz` (limit what is labeled), `--try`
