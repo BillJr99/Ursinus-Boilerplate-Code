@@ -106,8 +106,12 @@ def save_index(root, idx):
         n["examples"] = sorted(n["examples"], key=lambda e: e["cell"])
     p = os.path.join(root, INDEX)
     if not idx["notebooks"]:
-        if os.path.exists(p):
-            os.remove(p)
+        if os.path.exists(p):            # no notebook examples left: moved to ~/scratch, not deleted
+            dest = os.path.join(os.path.expanduser("~"), "scratch", "code-viz")
+            os.makedirs(dest, exist_ok=True)
+            import shutil
+            import time
+            shutil.move(p, os.path.join(dest, f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-notebooks.json"))
         return
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:

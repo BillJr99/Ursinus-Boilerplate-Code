@@ -718,6 +718,15 @@ downloads timed out on a default bridge network.
 On Bill's machines the containers run on minipc (`--host bill@10.0.0.26`, or `CODE_VIZ_HOST`),
 never on minipc2; staging folders move to `~/scratch/` when done.
 
+**Nothing is deleted** (Bill, 2026-11-14: "rm should ask too ... you can always move to scratch").
+Every copy to the Docker host goes into a fresh staging folder (`~/Documents/code-viz-staging/
+<name>-<pid>-<time>-<n>`, plain `rsync -a`, never `rsync --delete`), and every staging folder,
+including the runner build contexts and the tracer copies, moves to `~/scratch/code-viz/` on the
+host when the command ends. On the machine running code-viz, its temporary folders and the repo
+files it replaces or removes (an old uncompressed trace, an unlabeled example's trace and expected
+output, an emptied `viz/notebooks.json`) move to `~/scratch/code-viz/` as well. Only files inside
+the throwaway containers, which are removed with them, are deleted.
+
 **What needs containers and what runs in the browser.** Containers are needed only to *build*:
 `build`, `run`, `label --try` and `serve`'s Run button. The published `viz/` is a static site: the
 viewer, every trace, the step controls, the QR dialog and student mode run entirely in the reader's
@@ -1120,6 +1129,24 @@ def site_info(root):
     return {"url": (url.lower() + base) if url else "", "course": course}
 
 
+def retire_path(path):
+    """Move a file or folder code-viz is done with to ~/scratch/code-viz/ instead of deleting it
+    (Bill, 2026-11-14: "rm should ask too ... you can always move to scratch"). Section 15."""
+    if not os.path.lexists(path):
+        return
+    dest = os.path.join(os.path.expanduser("~"), "scratch", "code-viz")
+    os.makedirs(dest, exist_ok=True)
+    target = os.path.join(dest, f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{os.path.basename(path.rstrip('/'))}")
+    n = 1
+    while os.path.lexists(target):
+        n += 1
+        target = target.rsplit("~", 1)[0] + f"~{n}"
+    try:
+        shutil.move(path, target)
+    except OSError:
+        pass
+
+
 def write_page(root, page, lines):
     """Write a page back with every original line keeping its own ending (many course pages use CRLF,
     some on only some lines); an added line takes the ending of the line above it (notebooks.write_lines)."""
@@ -1430,6 +1457,7 @@ class Docker:
         self.keep = keep
         self.ollama_network = ollama_network
         self.built = {}
+        self.staged = []        # staging folders on the Docker host, moved to ~/scratch at cleanup
 
     def _cmd(self, args):
         d = (["sudo", "-n", "docker"] if self.sudo else ["docker"]) + args
@@ -1447,10 +1475,14 @@ class Docker:
         """Copy a folder to the Docker host (no-op locally) and return its path there."""
         if not self.host:
             return local
-        rdir = f"Documents/code-viz-staging/{name}"
+        # A fresh folder for every copy, so no rsync --delete is needed (that asks first under Bill's
+        # 2026-11-14 rule); the folders move to ~/scratch/code-viz on the host at cleanup.
+        self._n = getattr(self, "_n", 0) + 1
+        rdir = f"Documents/code-viz-staging/{name}-{os.getpid()}-{int(time.time())}-{self._n}"
         subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, f"mkdir -p {shlex.quote(rdir)}"], check=True)
-        subprocess.run(["rsync", "-a", "--delete", local.rstrip("/") + "/", f"{self.host}:{rdir}/"], check=True)
+        subprocess.run(["rsync", "-a", local.rstrip("/") + "/", f"{self.host}:{rdir}/"], check=True)
         home = subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, "echo $HOME"], capture_output=True, text=True).stdout.strip()
+        self.staged.append(f"{home}/{rdir}")
         return f"{home}/{rdir}"
 
     def fetch_dir(self, remote, local):
@@ -1519,10 +1551,13 @@ class Docker:
             p = os.path.join(work, "out", j["id"] + ".json")
             out[j["id"]] = json.load(open(p)) if os.path.exists(p) else {"error": "no trace (container: " + (r.stderr[-300:] or "?") + ")",
                                                                        "steps": [], "stdout": ""}
-        shutil.rmtree(work, ignore_errors=True)
+        retire_path(work)
         return out
 
     def cleanup(self):
+        for d in self.staged:          # runner contexts and tracer copies: to ~/scratch, never deleted
+            self.retire(d)
+        self.staged = []
         if self.keep:
             return
         for tag in self.built.values():
@@ -1868,7 +1903,7 @@ def label_notebooks(a, root, info, docker):
         try:
             traces = run_jobs([job_for(b, root, src) for b in cands], docker, src)
         finally:
-            shutil.rmtree(src, ignore_errors=True)
+            retire_path(src)
         def good(b):
             t = traces.get(b["label"]["id"], {})
             return not t.get("error") and bool((t.get("stdout") or "").strip() or t.get("figures") or t.get("steps"))
@@ -1973,7 +2008,7 @@ def cmd_label(a):
                 report_failures(a, cands, keep, traces)
                 kept = {b["label"]["id"] for b in keep} | {i for i, x in block_lookup(root).items()}
                 keep = [b for b in keep if all(x in kept for x in (b["label"].get("setup") or "").split(",") if x)]
-                shutil.rmtree(src, ignore_errors=True)
+                retire_path(src)
             # write labels (and links) bottom-up so line numbers stay valid
             for b in sorted(keep, key=lambda b: -b["start"]):
                 lab = b["label"]
@@ -2034,7 +2069,7 @@ def save_trace(path, t):
     with open(gz, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as fh:
         fh.write(data)
     if os.path.exists(path):
-        os.remove(path)
+        retire_path(path)   # the old uncompressed trace goes to ~/scratch, not deleted
     return True
 
 
@@ -2153,7 +2188,7 @@ def cmd_unlabel(a):
         for p in (os.path.join(site, "traces", vid + ".json"), os.path.join(site, "traces", vid + ".json.gz"),
                   os.path.join(site, "expected", vid + ".out")):
             if os.path.exists(p):
-                os.remove(p)
+                retire_path(p)   # moved to ~/scratch/code-viz, not deleted
     ip = os.path.join(site, "index.json")
     if os.path.exists(ip):
         d = json.load(open(ip))
@@ -2300,7 +2335,7 @@ def cmd_build(a):
     if not jobs and not os.path.exists(os.path.join(root, "viz", "index.json")):
         # No labeled examples and no site yet (a course that has not started using code-viz):
         # write nothing, so CI leaves the repo exactly as it was.
-        shutil.rmtree(src, ignore_errors=True)
+        retire_path(src)
         print(f"no code-viz examples in {info['course']}; nothing written")
         return 0
     print(f"building {len(jobs)} example(s) for {info['course']}")
@@ -2312,7 +2347,7 @@ def cmd_build(a):
             traces, kept = settle(root, jobs, traces, docker, src)   # stable traces (section 6)
     finally:
         docker.cleanup()
-        shutil.rmtree(src, ignore_errors=True)
+        retire_path(src)
     changed, failed = write_site(root, info, traces, jobs, a)
     print(f"wrote {len(jobs)} trace(s) to viz/; failed {len(failed)}; output changed {len(changed)}"
           + (f"; kept {len(kept)} committed trace(s) that differ only in run-to-run values" if kept else ""))
@@ -2513,7 +2548,7 @@ def cmd_qr(a):
                 img = os.path.join(out, i + ".svg")
             print(f"\n<!-- code-viz QR for {i} -->\n![Scan to open this example on your phone]({img})\n"
                   f"[Open this example]({u})\n")
-    shutil.rmtree(work, ignore_errors=True)
+    retire_path(work)
     return 0
 
 

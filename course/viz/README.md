@@ -719,6 +719,15 @@ downloads timed out on a default bridge network.
 On Bill's machines the containers run on minipc (`--host bill@10.0.0.26`, or `CODE_VIZ_HOST`),
 never on minipc2; staging folders move to `~/scratch/` when done.
 
+**Nothing is deleted** (Bill, 2026-11-14: "rm should ask too ... you can always move to scratch").
+Every copy to the Docker host goes into a fresh staging folder (`~/Documents/code-viz-staging/
+<name>-<pid>-<time>-<n>`, plain `rsync -a`, never `rsync --delete`), and every staging folder,
+including the runner build contexts and the tracer copies, moves to `~/scratch/code-viz/` on the
+host when the command ends. On the machine running code-viz, its temporary folders and the repo
+files it replaces or removes (an old uncompressed trace, an unlabeled example's trace and expected
+output, an emptied `viz/notebooks.json`) move to `~/scratch/code-viz/` as well. Only files inside
+the throwaway containers, which are removed with them, are deleted.
+
 **What needs containers and what runs in the browser.** Containers are needed only to *build*:
 `build`, `run`, `label --try` and `serve`'s Run button. The published `viz/` is a static site: the
 viewer, every trace, the step controls, the QR dialog and student mode run entirely in the reader's
