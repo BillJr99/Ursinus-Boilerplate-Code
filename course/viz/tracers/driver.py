@@ -1,0 +1,148 @@
+"""code-viz batch driver, run inside a runner container.
+
+Reads /work/jobs.json (written by code-viz), runs each example with its tracer under a per-example
+timeout, and writes /work/out/<id>.json. The container runs with no network (except the agents
+runner, which can reach Ollama only), capped CPU, memory and process count, and is removed after.
+
+Job fields: id, viz (env, lambda, c, bison, automaton, agent, cast, plain), lang, file (relative to
+/work/src), input (optional stdin or automaton/bison input), timeout (seconds), max_steps.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+T = "/viz/tracers"
+SRC = "/work/src"
+OUT = "/work/out"
+
+
+def sh(cmd, timeout, cwd=None, inp=None, env=None):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=inp,
+                          env=dict(os.environ, **(env or {})))
+
+
+def tracer(script, job, extra=()):
+    path = os.path.join(SRC, job["file"])
+    r = sh([sys.executable, os.path.join(T, script), path, *extra], job.get("timeout", 15), cwd=os.path.dirname(path))
+    if r.returncode != 0 and not r.stdout.strip():
+        raise RuntimeError((r.stderr or "tracer failed")[-600:])
+    return json.loads(r.stdout)
+
+
+def plain(job):
+    """Run without a step trace; record output only."""
+    path = os.path.join(SRC, job["file"])
+    d, f = os.path.dirname(path), os.path.basename(path)
+    lang, to, inp = job["lang"], job.get("timeout", 20), job.get("input")
+    if lang == "haskell":
+        r = sh(["runghc", f], to, d, inp)
+    elif lang == "ocaml":
+        r = sh(["ocaml", f], to, d, inp)
+    elif lang == "prolog":
+        goals = [l.strip()[2:].strip().rstrip(".") for l in open(path).read().splitlines() if l.strip().startswith("?-")]
+        prog = os.path.join(d, "cviz_prog.pl")
+        with open(prog, "w") as fh:
+            fh.write("\n".join(l for l in open(path).read().splitlines() if not l.strip().startswith("?-")))
+        outs = []
+        for g in goals or ["true"]:
+            r = sh(["swipl", "-q", "-f", prog, "-g", f"forall(({g}), (print_message(informational, format('~w', [ok])), writeln(yes))) -> true ; writeln(no)", "-t", "halt"], to, d)
+            outs.append(f"?- {g}.\n{r.stdout}{r.stderr}")
+        return {"kind": "plain", "stdout": "".join(outs), "error": None}
+    elif lang in ("c", "cpp"):
+        exe = os.path.join(tempfile.mkdtemp(), "prog")
+        cc = "g++" if lang == "cpp" else "gcc"
+        b = sh([cc, "-O0", "-g", f, "-o", exe, "-lm"], to, d)
+        if b.returncode != 0:
+            raise RuntimeError("compile failed: " + b.stderr[-600:])
+        r = sh([exe], to, d, inp)
+    elif lang == "mini":
+        work = tempfile.mkdtemp()
+        mdir = os.path.join(SRC, job.get("interpreter", "mini"))
+        for x in os.listdir(mdir):
+            shutil.copy(os.path.join(mdir, x), work)
+        b = sh(["make"], 120, work)
+        if b.returncode != 0:
+            raise RuntimeError("mini build failed: " + (b.stdout + b.stderr)[-600:])
+        exe = next((os.path.join(work, x) for x in ("mininote", "mini", "a.out") if os.path.exists(os.path.join(work, x))), None)
+        r = sh([exe, path], to, work) if exe else None
+        if r is None:
+            raise RuntimeError("mini interpreter binary not found after make")
+    elif lang == "shell":
+        r = sh(["bash", f], to, d, inp)
+    else:
+        r = sh([sys.executable, f], to, d, inp)
+    return {"kind": "plain", "stdout": r.stdout + (r.stderr if r.returncode else ""),
+            "error": None if r.returncode == 0 else f"exit {r.returncode}"}
+
+
+def c_trace(job):
+    path = os.path.join(SRC, job["file"])
+    d, f = os.path.dirname(path), os.path.basename(path)
+    work = tempfile.mkdtemp()
+    exe = os.path.join(work, "prog")
+    cc = "g++" if job["lang"] == "cpp" else "gcc"
+    b = sh([cc, "-O0", "-g", "-fno-omit-frame-pointer", f, "-o", exe, "-lm"], 60, d)
+    if b.returncode != 0:
+        raise RuntimeError("compile failed: " + b.stderr[-600:])
+    out, so = os.path.join(work, "trace.json"), os.path.join(work, "stdout.txt")
+    sh(["gdb", "-q", "-batch", "-nx", "-x", os.path.join(T, "cstep_gdb.py")], job.get("timeout", 40), d,
+       env={"CVIZ_PROG": exe, "CVIZ_SRC": f, "CVIZ_OUT": out, "CVIZ_STDOUT": so, "CVIZ_MAX": str(job.get("max_steps", 400))})
+    data = json.load(open(out)) if os.path.exists(out) else {"steps": []}
+    stdout = open(so, errors="replace").read() if os.path.exists(so) else ""
+    plain_run = sh([exe], 10, d)
+    return {"kind": "c", "language": job["lang"], "source": open(path, errors="replace").read(), "steps": data["steps"],
+            "stdout": plain_run.stdout or stdout, "error": None if plain_run.returncode == 0 else f"exit {plain_run.returncode}",
+            "truncated": data.get("truncated", False)}
+
+
+def one(job):
+    v, lang = job["viz"], job["lang"]
+    ms = str(job.get("max_steps", 800))
+    if v == "env" and lang == "python":
+        return tracer("pytrace.py", job, ("--max-steps", ms))
+    if v == "env" and lang == "scheme":
+        t = tracer("schemetrace.py", job, ("--max-steps", ms))
+        path = os.path.join(SRC, job["file"])
+        g = sh(["guile", "--no-auto-compile", "-s", os.path.join(T, "cviz-repl.scm"), path], job.get("timeout", 15), os.path.dirname(path))
+        t["reference_stdout"] = g.stdout
+        if g.stdout.strip() != t.get("stdout", "").strip():
+            t["approximate"] = True
+            t["stdout"] = g.stdout
+        return t
+    if v == "lambda":
+        return tracer("lambdatrace.py", job, ("--max-steps", ms))
+    if v == "c":
+        return c_trace(job)
+    if v == "bison":
+        return tracer("bisontrace.py", job, ("--input", job.get("input", "")))
+    if v == "automaton":
+        return tracer("automaton.py", job, ("--input", job.get("input", "")))
+    if v == "cast":
+        return tracer("shellcast.py", job)
+    if v == "agent":
+        return tracer("agentrec.py", job)
+    return plain(job)
+
+
+def main():
+    jobs = json.load(open("/work/jobs.json"))
+    os.makedirs(OUT, exist_ok=True)
+    for job in jobs:
+        try:
+            res = one(job)
+        except subprocess.TimeoutExpired:
+            res = {"error": "timeout", "steps": [], "stdout": ""}
+        except Exception as e:
+            res = {"error": f"{type(e).__name__}: {str(e)[:600]}", "steps": [], "stdout": ""}
+        res.setdefault("version", 1)
+        res["id"] = job["id"]
+        with open(os.path.join(OUT, job["id"] + ".json"), "w") as fh:
+            json.dump(res, fh)
+        print(job["id"], "error" if res.get("error") else "ok", flush=True)
+
+
+if __name__ == "__main__":
+    main()

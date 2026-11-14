@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-viz</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="#">code-viz</a>
+  <span id="title" class="title"></span>
+  <span class="spacer"></span>
+  <a id="pagelink" class="pagelink" target="_blank" rel="noopener"></a>
+</header>
+<main id="main">
+  <section id="list" class="list" hidden></section>
+  <section id="example" class="example" hidden>
+    <div class="controls">
+      <button id="first" title="First step">|&lt;</button>
+      <button id="prev" title="Previous step (left arrow)">&lt;</button>
+      <button id="play" title="Play">Play</button>
+      <button id="next" title="Next step (right arrow)">&gt;</button>
+      <button id="last" title="Last step">&gt;|</button>
+      <input id="slider" type="range" min="0" max="0" value="0">
+      <span id="stepinfo" class="stepinfo"></span>
+      <span id="extra" class="extra"></span>
+      <span class="spacer"></span>
+      <button id="edit" title="Edit the code and run it again">Edit</button>
+    </div>
+    <div class="cols">
+      <div class="left">
+        <div class="panel-title">Code</div>
+        <pre id="code" class="code"></pre>
+        <div id="editor" class="editor" hidden>
+          <textarea id="editbox" spellcheck="false"></textarea>
+          <div class="editbar"><button id="rerun">Run</button> <span id="runnote" class="note"></span></div>
+        </div>
+        <div class="panel-title">Output</div>
+        <pre id="output" class="output"></pre>
+      </div>
+      <div class="right">
+        <div class="panel-title" id="paneltitle">State</div>
+        <div id="panel" class="panel"></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/viz.js/2.1.2/viz.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/viz.js/2.1.2/full.render.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

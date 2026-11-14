@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+"""code-viz: run the code examples in a course site and show, step by step, what they do.
+
+code-viz finds the code blocks in a course's LiaScript decks and tutorials, runs each one in a
+throwaway Docker container for its language, records a trace of what the program does, and
+builds a static viewer: the code with the current line highlighted, a step slider, and a panel
+that shows the program's state (an environment diagram, a lambda term being reduced, a bison LR
+parse, an automaton reading its input, C memory with pointers, an agent's model calls).
+
+Run it from a course repo (Ursinus-CS374-Fall2026, Ursinus-CS357-Fall2026, ...). It lives in the
+Ursinus-Boilerplate-Code repo, the code/ submodule of every course repo, at code/course/viz/.
+
+LABELS
+  A block is an example when a hidden comment sits on the line above its opening fence:
+
+      <!-- run: id=cs374-closures-1 viz=env -->
+      ```python
+      def make_counter(): ...
+      ```
+
+  LiaScript and Jekyll do not show HTML comments, so students never see the label. Fields:
+    id=      unique name; also the viewer address: <site>/viz/#<id>
+    viz=     env (Python, Scheme), lambda, c, bison, automaton, agent, cast (shell), plain (output only)
+    lang=    python, scheme, lambda, c, cpp, haskell, prolog, ocaml, mini, shell (default: the fence's language)
+    input=   "text" given to the program on stdin, to a bison parser, or to an automaton
+    record   (agent examples) replay the committed recording; never re-run in CI
+  Files that are not code blocks (bison grammars, automata .dot files) are listed in viz/manifest.json.
+
+USAGE EXAMPLES
+  # 1. What is in this course? Lists labeled examples and suggests labels for runnable-looking blocks.
+  code-viz catalog
+  code-viz catalog --page _pages/Activities/liascript-scopechains.md
+
+  # 2. Label the suggestions. --try runs each candidate first and labels only those that run
+  #    cleanly; --links also adds a "Visualize this example" link under each labeled block.
+  code-viz label --try --links
+  code-viz label --try --links --lang scheme --page _pages/Activities/liascript-scheme.md
+
+  # 3. Run one example and write its trace (by id, or any file).
+  code-viz run cs374-liascript-scopechains-3
+  code-viz run files/examples/mininote --viz bison --input "x = 2 * 3 + 4"
+  code-viz run files/dotty/ends_in_ab.dot --input abab
+  code-viz run my_closure.py              # a file outside the site: traced and printed as JSON
+
+  # 4. Build the whole site's viewer into viz/ (traces, pages, index), and check outputs.
+  code-viz build                         # every labeled example and manifest entry
+  code-viz build --check                 # fail if an example stopped running (CI uses this)
+  code-viz build --lang python --check --strict   # only Python; also fail if an output changed
+  code-viz build --update-expected       # accept today's outputs as the expected ones
+  code-viz build --record-agents --ollama-network cviz-ollama   # re-record CS357 agent runs
+
+  # 5. Live mode: serve the viewer on a port; examples can be edited and re-run.
+  code-viz serve                         # http://localhost:8765/viz/
+  code-viz serve cs374-liascript-closures-2 --port 9000
+  code-viz serve my_closure.py           # trace one file and open it in the viewer
+
+WHERE THINGS RUN
+  Containers run where Docker is: locally (a laptop with Docker, or GitHub Actions), or on another
+  machine over SSH with --host user@machine (or CODE_VIZ_HOST), using `sudo -n docker` there. Each
+  runner image is built from runners/<name>/Dockerfile, examples run with no network, one CPU,
+  1 GB of memory and a process cap, and images are removed afterwards unless --keep-images.
+  Python, Scheme and lambda examples can also be edited and re-run in the browser (Pyodide),
+  with no server at all.
+
+OUTPUT
+  viz/index.html, viz/viewer.js, viz/viewer.css     the viewer (static; no server needed)
+  viz/traces/<id>.json                               one trace per example (format: README.md)
+  viz/expected/<id>.out                              the expected output, checked by build --check
+  viz/index.json, viz/catalog.json, viz/manifest.json
+"""
+import argparse
+import hashlib
+import http.server
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+TRACERS = os.path.join(HERE, "tracers")
+RUNNERS = os.path.join(HERE, "runners")
+VIEWER = os.path.join(HERE, "viewer")
+
+RUNNER_OF = {("env", "python"): "python", ("env", "scheme"): "scheme", ("lambda", "lambda"): "python",
+             ("c", "c"): "c", ("c", "cpp"): "c", ("bison", "flexbison"): "flexbison",
+             ("automaton", "dot"): "python", ("agent", "python"): "agents", ("cast", "shell"): "shell"}
+PLAIN_RUNNER = {"haskell": "haskell", "prolog": "prolog", "ocaml": "ocaml", "mini": "mini", "c": "c", "cpp": "c",
+                "python": "python", "shell": "shell", "scheme": "scheme"}
+LANG_ALIASES = {"py": "python", "python3": "python", "scm": "scheme", "racket": "scheme", "lisp": "scheme",
+                "hs": "haskell", "pl": "prolog", "ml": "ocaml", "c++": "cpp", "bash": "shell", "sh": "shell",
+                "console": "shell", "lambda": "lambda"}
+FENCE = re.compile(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+.#-]*)(.*)$")
+LABEL = re.compile(r"^\s*<!--\s*run:(.*?)-->\s*$")
+LINK_MARK = "<!-- code-viz link -->"
+STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"numpy", "pandas", "sklearn", "matplotlib", "requests"}
+AGENT_HINTS = re.compile(r"ollama|11434|/api/(chat|generate|embed)|chat\.completions|promptfoo", re.I)
+
+
+# ---- repo and site -------------------------------------------------------------------------------
+def repo_root():
+    try:
+        return subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return os.getcwd()
+
+
+def site_info(root):
+    url, base = "", ""
+    cfg = os.path.join(root, "_config.yml")
+    if os.path.exists(cfg):
+        for line in open(cfg, encoding="utf-8", errors="replace"):
+            m = re.match(r"^\s*url\s*:\s*\"?([^\"#\s]+)", line)
+            if m:
+                url = m.group(1).rstrip("/")
+            m = re.match(r"^\s*baseurl\s*:\s*\"?([^\"#\s]*)", line)
+            if m:
+                base = m.group(1).rstrip("/")
+    name = os.path.basename(root)
+    m = re.search(r"(CS\d+|CIE\d+)", name, re.I)
+    course = m.group(1).lower() if m else re.sub(r"\W", "", name.lower())[:8]
+    # GitHub Pages paths are case-sensitive: lower-case only the host
+    return {"url": (url.lower() + base) if url else "", "course": course}
+
+
+def pages(root, only=None):
+    out = []
+    for sub in ("_pages/Activities", "_pages/Tutorials"):
+        d = os.path.join(root, sub)
+        for dp, _, fn in os.walk(d):
+            for f in sorted(fn):
+                if f.endswith(".md"):
+                    p = os.path.relpath(os.path.join(dp, f), root)
+                    if only is None or os.path.normpath(p) == os.path.normpath(only):
+                        out.append(p)
+    return sorted(out)
+
+
+def slug(path):
+    return re.sub(r"[^a-z0-9]+", "-", os.path.splitext(os.path.basename(path))[0].lower()).strip("-")
+
+
+# ---- blocks --------------------------------------------------------------------------------------
+def parse_label(text):
+    out = {}
+    for m in re.finditer(r"(\w+)(?:=(\"[^\"]*\"|\S+))?", text):
+        v = m.group(2)
+        out[m.group(1)] = (v[1:-1] if v and v.startswith('"') else v) if v is not None else True
+    return out
+
+
+def blocks(root, page):
+    """Fenced blocks of a page that start at column 0: (start line index, end index, lang, code, label)."""
+    lines = open(os.path.join(root, page), encoding="utf-8", errors="replace").read().split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        m = FENCE.match(lines[i])
+        if m:
+            tok, lang = m.group(1), (m.group(2) or "").lower()
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith(tok[0] * len(tok)):
+                j += 1
+            label = None
+            k = i - 1
+            if k >= 0 and LABEL.match(lines[k]):
+                label = parse_label(LABEL.match(lines[k]).group(1))
+            out.append({"start": i, "end": j, "lang": LANG_ALIASES.get(lang, lang), "code": "\n".join(lines[i + 1:j]),
+                        "label": label, "page": page})
+            i = j + 1
+            continue
+        i += 1
+    return out, lines
+
+
+def looks_lambda(code):
+    sys.path.insert(0, TRACERS)
+    import lambdatrace
+    w = lambdatrace.worked_term(code)
+    if w:
+        try:
+            lambdatrace.parse(lambdatrace.tokens(w))
+            return True
+        except SyntaxError:
+            return False
+    ls = [l.strip() for l in code.splitlines() if l.strip() and not l.strip().startswith(("#", "--"))]
+    if not ls or not any("λ" in l or re.search(r"\\[a-z]\s*\.", l) for l in ls):
+        return False
+    if not all(re.fullmatch(r"([A-Za-z_][A-Za-z0-9_']*\s*=\s*)?[λ\\A-Za-z0-9_'.()\s]+", l) for l in ls):
+        return False
+    # an example to reduce needs at least one expression line, not only definitions
+    return any(not re.match(r"^[A-Za-z_][A-Za-z0-9_']*\s*=", l) for l in ls)
+
+
+def suggest(b):
+    """A suggested label for an unlabeled block, or None when it is not a runnable example."""
+    code, lang = b["code"], b["lang"]
+    n = len([l for l in code.splitlines() if l.strip()])
+    if lang == "python" and n >= 3:
+        import ast
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return None
+        if "input(" in code or re.search(r"^\s*\.\.\.\s*$", code, re.M) or "# ..." in code:
+            return None
+        mods = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mods.add(node.module.split(".")[0])
+        if AGENT_HINTS.search(code) and mods <= STDLIB | {"ollama", "httpx", "openai"}:
+            return {"viz": "agent", "lang": "python", "record": True}
+        if not mods <= STDLIB or not re.search(r"\bprint\s*\(", code):
+            return None
+        return {"viz": "env", "lang": "python"}
+    if lang == "scheme" and n >= 1 and code.count("(") == code.count(")"):
+        return {"viz": "env", "lang": "scheme"}
+    if lang in ("", "text", "none", "lambda") and looks_lambda(code):
+        return {"viz": "lambda", "lang": "lambda"}
+    if lang in ("c", "cpp") and "main(" in code and "#include" in code:
+        return {"viz": "c", "lang": lang}
+    if lang == "haskell" and re.search(r"^main\s*(::|=)", code, re.M):
+        return {"viz": "plain", "lang": "haskell"}
+    if lang == "prolog" and "?-" in code:
+        return {"viz": "plain", "lang": "prolog"}
+    if lang == "ocaml" and re.search(r"print_|Printf", code):
+        return {"viz": "plain", "lang": "ocaml"}
+    if lang == "mini" and n >= 1:
+        return {"viz": "plain", "lang": "mini"}
+    if lang == "shell" and n >= 1:
+        safe = re.compile(r"^\s*(\$\s*)?(echo|printf|ls|cat|grep|sed|awk|wc|sort|uniq|head|tail|cut|tr|seq|expr|python3 -c|jq|date|pwd|true|false)\b")
+        cmds = [l for l in code.splitlines() if l.strip() and not l.strip().startswith("#")]
+        if cmds and all(safe.match(l) for l in cmds) and "<<" not in code:
+            return {"viz": "cast", "lang": "shell"}
+    return None
+
+
+# ---- containers ----------------------------------------------------------------------------------
+class Docker:
+    def __init__(self, host=None, sudo=None, keep=False, ollama_network=None):
+        self.host = host or os.environ.get("CODE_VIZ_HOST") or None
+        self.sudo = sudo if sudo is not None else bool(self.host)
+        self.keep = keep
+        self.ollama_network = ollama_network
+        self.built = {}
+
+    def _cmd(self, args):
+        d = (["sudo", "-n", "docker"] if self.sudo else ["docker"]) + args
+        if self.host:
+            return ["ssh", "-o", "BatchMode=yes", self.host, " ".join(shlex.quote(x) for x in d)]
+        return d
+
+    def sh(self, args, timeout=3600, check=True):
+        r = subprocess.run(self._cmd(args), capture_output=True, text=True, timeout=timeout)
+        if check and r.returncode != 0:
+            raise RuntimeError(f"docker {' '.join(args[:2])} failed: {r.stderr[-800:]}")
+        return r
+
+    def remote_dir(self, local, name):
+        """Copy a folder to the Docker host (no-op locally) and return its path there."""
+        if not self.host:
+            return local
+        rdir = f"Documents/code-viz-staging/{name}"
+        subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, f"mkdir -p {shlex.quote(rdir)}"], check=True)
+        subprocess.run(["rsync", "-a", "--delete", local.rstrip("/") + "/", f"{self.host}:{rdir}/"], check=True)
+        home = subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, "echo $HOME"], capture_output=True, text=True).stdout.strip()
+        return f"{home}/{rdir}"
+
+    def fetch_dir(self, remote, local):
+        if self.host:
+            subprocess.run(["rsync", "-a", f"{self.host}:{remote}/", local.rstrip("/") + "/"], check=True)
+
+    def retire(self, remote):
+        """Move a staging folder to ~/scratch on the Docker host (never deleted there)."""
+        if self.host:
+            subprocess.run(["ssh", "-o", "BatchMode=yes", self.host,
+                            f"mkdir -p ~/scratch/code-viz && mv {shlex.quote(remote)} ~/scratch/code-viz/ 2>/dev/null || true"])
+
+    def image(self, runner):
+        if runner in self.built:
+            return self.built[runner]
+        df = os.path.join(RUNNERS, runner, "Dockerfile")
+        tag = f"code-viz-{runner}:" + hashlib.sha256(open(df, "rb").read()).hexdigest()[:12]
+        if self.sh(["image", "inspect", tag], check=False).returncode != 0:
+            ctx = self.remote_dir(os.path.join(RUNNERS, runner), f"runner-{runner}")
+            print(f"  building runner image {tag} ...", flush=True)
+            self.sh(["build", "-q", "--label", "code-viz=1", "-t", tag, ctx], timeout=3600)
+        self.built[runner] = tag
+        return tag
+
+    def run_batch(self, runner, jobs, src_dir):
+        """Run a batch of jobs in one container; returns {id: trace}."""
+        work = tempfile.mkdtemp(prefix=f"code-viz-{runner}-")
+        shutil.copytree(src_dir, os.path.join(work, "src"), dirs_exist_ok=True)
+        json.dump(jobs, open(os.path.join(work, "jobs.json"), "w"))
+        tag = self.image(runner)
+        name = f"cviz-{runner}-{int(time.time())}-{os.getpid()}"
+        rwork = self.remote_dir(work, name)
+        rtr = self.remote_dir(TRACERS, "tracers")
+        net = ["--network", self.ollama_network] if runner == "agents" and self.ollama_network else ["--network", "none"]
+        env = ["-e", f"OLLAMA_HOST={os.environ.get('OLLAMA_HOST', 'http://ollama:11434')}"] if runner == "agents" else []
+        total = 60 + sum(j.get("timeout", 15) for j in jobs)
+        r = self.sh(["run", "--rm", "--name", name, *net, *env, "--cpus", "1", "--memory", "1g", "--pids-limit", "256",
+                     "-v", f"{rtr}:/viz/tracers:ro", "-v", f"{rwork}:/work", tag,
+                     "timeout", str(total), "python3", "/viz/tracers/driver.py"], timeout=total + 120, check=False)
+        self.fetch_dir(rwork, work)
+        self.retire(rwork)
+        out = {}
+        for j in jobs:
+            p = os.path.join(work, "out", j["id"] + ".json")
+            out[j["id"]] = json.load(open(p)) if os.path.exists(p) else {"error": "no trace (container: " + (r.stderr[-300:] or "?") + ")",
+                                                                       "steps": [], "stdout": ""}
+        shutil.rmtree(work, ignore_errors=True)
+        return out
+
+    def cleanup(self):
+        if self.keep:
+            return
+        for tag in self.built.values():
+            self.sh(["rmi", tag], check=False)
+
+
+# ---- jobs ----------------------------------------------------------------------------------------
+EXT = {"python": "py", "scheme": "scm", "lambda": "lam", "c": "c", "cpp": "cpp", "haskell": "hs", "prolog": "pl",
+       "ocaml": "ml", "mini": "mini", "shell": "sh"}
+
+
+def job_for(b, root, src_dir):
+    lab = b["label"]
+    lang = LANG_ALIASES.get(lab.get("lang") or b["lang"], lab.get("lang") or b["lang"])
+    viz = lab.get("viz", "plain")
+    if viz == "lambda":
+        lang = "lambda"
+    fname = f"{lab['id']}/main.{EXT.get(lang, 'txt')}"
+    os.makedirs(os.path.join(src_dir, lab["id"]), exist_ok=True)
+    code = b["code"]
+    if lang == "scheme":
+        code = code + "\n"
+    open(os.path.join(src_dir, fname), "w", encoding="utf-8").write(code)
+    # model calls on a CPU are slow: agent examples get five minutes unless the label says otherwise
+    job = {"id": lab["id"], "viz": viz, "lang": lang, "file": fname, "timeout": int(lab.get("timeout", 300 if viz == "agent" else 20)),
+           "max_steps": int(lab.get("max_steps", 800)), "page": b["page"], "line": b["start"] + 1}
+    if lab.get("input"):
+        job["input"] = lab["input"]
+    if lang == "mini":
+        mini = os.path.join(root, "files/examples/mininote")
+        if os.path.isdir(mini):
+            shutil.copytree(mini, os.path.join(src_dir, "mini"), dirs_exist_ok=True)
+    return job
+
+
+def runner_for(job):
+    return RUNNER_OF.get((job["viz"], job["lang"])) or PLAIN_RUNNER.get(job["lang"], "python")
+
+
+def manifest_jobs(root, src_dir, man):
+    jobs = []
+    for e in man:
+        p = os.path.join(root, e["file"])
+        dst = os.path.join(src_dir, e["id"])
+        if os.path.isdir(p):
+            shutil.copytree(p, dst, dirs_exist_ok=True)
+            fname = e["id"]
+        else:
+            os.makedirs(dst, exist_ok=True)
+            shutil.copy(p, dst)
+            fname = f"{e['id']}/{os.path.basename(p)}"
+        lang = {"bison": "flexbison", "automaton": "dot"}.get(e["viz"], e.get("lang", "python"))
+        jobs.append({"id": e["id"], "viz": e["viz"], "lang": lang, "file": fname, "input": e.get("input", ""),
+                     "timeout": int(e.get("timeout", 60)), "page": e["file"], "line": 1})
+    return jobs
+
+
+def default_manifest(root, course):
+    """Bison grammars (folders with a .y) and automata (.dot files) found under files/."""
+    out = []
+    for dp, dn, fn in os.walk(os.path.join(root, "files")):
+        if "/." in dp or "node_modules" in dp:
+            continue
+        rel = os.path.relpath(dp, root)
+        ys = [f for f in fn if f.endswith(".y")]
+        if ys:
+            inp = ""
+            samples = os.path.join(dp, "samples.txt")
+            if os.path.exists(samples):
+                inp = next((l.strip() for l in open(samples, errors="replace") if l.strip() and not l.startswith("#")), "")
+            out.append({"id": f"{course}-{slug(rel.replace('files/', '', 1).replace('/', '-'))}", "viz": "bison", "file": rel,
+                        "input": inp or "2 * 3 + 4"})
+        for f in fn:
+            if f.endswith(".dot") and os.path.getsize(os.path.join(dp, f)) < 20000:
+                txt = open(os.path.join(dp, f), errors="replace").read()
+                if "doublecircle" in txt and "->" in txt:
+                    out.append({"id": f"{course}-{slug(f)}", "viz": "automaton", "file": os.path.join(rel, f), "input": "abab"})
+    return out
+
+
+def run_jobs(jobs, docker, src_dir):
+    by = {}
+    for j in jobs:
+        by.setdefault(runner_for(j), []).append(j)
+    traces = {}
+    for runner, js in sorted(by.items()):
+        print(f"  {runner}: {len(js)} example(s)", flush=True)
+        for i in range(0, len(js), 60):
+            traces.update(docker.run_batch(runner, js[i:i + 60], src_dir))
+    return traces
+
+
+# ---- commands ------------------------------------------------------------------------------------
+def all_blocks(root, page=None):
+    out = []
+    for p in pages(root, page):
+        bs, _ = blocks(root, p)
+        out += bs
+    return out
+
+
+def cmd_catalog(a):
+    root = repo_root()
+    info = site_info(root)
+    bs = all_blocks(root, a.page)
+    labeled = [b for b in bs if b["label"]]
+    sugg = [(b, suggest(b)) for b in bs if not b["label"]]
+    sugg = [(b, s) for b, s in sugg if s]
+    counts = {}
+    for b, s in sugg:
+        counts[(s["viz"], s["lang"])] = counts.get((s["viz"], s["lang"]), 0) + 1
+    langs = {}
+    for b in bs:
+        langs[b["lang"] or "none"] = langs.get(b["lang"] or "none", 0) + 1
+    invalid = []
+    for b in bs:
+        if b["lang"] == "json":
+            try:
+                json.loads(b["code"])
+            except ValueError as e:
+                invalid.append(f"{b['page']}:{b['start'] + 1} json: {e}")
+    print(f"{root}  ({info['course']}, site {info['url'] or '?'})")
+    print(f"blocks: {len(bs)} (" + ", ".join(f"{k} {v}" for k, v in sorted(langs.items(), key=lambda x: -x[1])[:10]) + ")")
+    print(f"labeled examples: {len(labeled)}")
+    print("suggested labels: " + (", ".join(f"{v} {l} {n}" for (v, l), n in sorted(counts.items())) or "none"))
+    if invalid:
+        print(f"config blocks that do not parse: {len(invalid)}")
+        for x in invalid[:10]:
+            print("  " + x)
+    os.makedirs(os.path.join(root, "viz"), exist_ok=True)
+    json.dump({"labeled": [{"id": b["label"]["id"], "page": b["page"], "line": b["start"] + 1} for b in labeled],
+               "suggested": [{"page": b["page"], "line": b["start"] + 1, **s} for b, s in sugg],
+               "invalid_config": invalid}, open(os.path.join(root, "viz", "catalog.json"), "w"), indent=1)
+    if a.verbose:
+        for b, s in sugg:
+            print(f"  {b['page']}:{b['start'] + 1}  {s['viz']} {s['lang']}")
+    return 0
+
+
+def link_line(info, vid):
+    return f"[Visualize this example]({info['url']}/viz/#{vid}) {LINK_MARK}"
+
+
+def cmd_label(a):
+    root = repo_root()
+    info = site_info(root)
+    docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network) if a.try_run else None
+    total = 0
+    try:
+        for page in pages(root, a.page):
+            bs, lines = blocks(root, page)
+            used = {b["label"]["id"] for b in bs if b["label"]}
+            n = 1
+            cands = []
+            for b in bs:
+                if b["label"]:
+                    continue
+                s = suggest(b)
+                if not s or (a.lang and s["lang"] != a.lang) or (a.viz and s["viz"] != a.viz):
+                    continue
+                if (s["viz"] == "agent") != bool(a.agents):
+                    continue  # agent examples are labeled in their own pass (--agents), with Ollama
+                while f"{info['course']}-{slug(page)}-{n}" in used:
+                    n += 1
+                vid = f"{info['course']}-{slug(page)}-{n}"
+                used.add(vid)
+                b["label"] = dict(s, id=vid)
+                cands.append(b)
+            if not cands:
+                continue
+            keep = cands
+            if docker:
+                src = tempfile.mkdtemp(prefix="code-viz-try-")
+                jobs = [job_for(b, root, src) for b in cands]
+                traces = run_jobs(jobs, docker, src)
+                def good(b):
+                    t = traces[b["label"]["id"]]
+                    if t.get("error") or not (t.get("stdout") or t.get("steps")):
+                        return False
+                    if b["label"]["viz"] == "lambda":  # only terms that actually reduce
+                        return len((t.get("orders") or {}).get("normal") or t.get("steps") or []) > 1
+                    if b["label"]["viz"] == "env" and b["label"]["lang"] == "scheme" and t.get("approximate"):
+                        return bool(t.get("steps"))
+                    return True
+                keep = [b for b in cands if good(b)]
+                shutil.rmtree(src, ignore_errors=True)
+            # write labels (and links) bottom-up so line numbers stay valid
+            for b in sorted(keep, key=lambda b: -b["start"]):
+                lab = b["label"]
+                fields = " ".join([f"id={lab['id']}", f"viz={lab['viz']}"] + ([f"lang={lab['lang']}"] if lab["lang"] != b["lang"] else [])
+                                  + (["record"] if lab.get("record") else []))
+                if a.links:
+                    end = b["end"]
+                    after = end + 1
+                    while after < len(lines) and (lines[after].strip().startswith("@") or lines[after].strip().startswith("<script")):
+                        after += 1
+                    if not (after < len(lines) and LINK_MARK in lines[after]):
+                        lines.insert(after, link_line(info, lab["id"]))
+                lines.insert(b["start"], f"<!-- run: {fields} -->")
+            open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+            total += len(keep)
+            print(f"{page}: labeled {len(keep)} of {len(cands)} candidate(s)")
+    finally:
+        if docker:
+            docker.cleanup()
+    print(f"labeled {total} example(s)")
+    return 0
+
+
+def norm(text):
+    """Outputs compared without memory addresses, which change on every run."""
+    return re.sub(r"0x[0-9a-fA-F]+", "0x?", text).rstrip()
+
+
+def write_site(root, info, traces, jobs, a):
+    site = os.path.join(root, "viz")
+    os.makedirs(os.path.join(site, "traces"), exist_ok=True)
+    os.makedirs(os.path.join(site, "expected"), exist_ok=True)
+    os.makedirs(os.path.join(site, "tracers"), exist_ok=True)
+    for f in os.listdir(VIEWER):
+        shutil.copy(os.path.join(VIEWER, f), site)
+    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py"):
+        shutil.copy(os.path.join(TRACERS, f), os.path.join(site, "tracers"))
+    index_path = os.path.join(site, "index.json")
+    index = {e["id"]: e for e in (json.load(open(index_path)).get("examples", []) if os.path.exists(index_path) else [])}
+    changed, failed = [], []
+    for j in jobs:
+        t = traces.get(j["id"], {})
+        t.update({"id": j["id"], "page": j["page"], "line": j["line"], "viz": j["viz"], "lang": j["lang"]})
+        t.setdefault("kind", j["viz"])
+        if t.get("error") and not t.get("steps") and not t.get("stdout"):
+            failed.append((j["id"], t["error"]))
+        json.dump(t, open(os.path.join(site, "traces", j["id"] + ".json"), "w"))
+        exp = os.path.join(site, "expected", j["id"] + ".out")
+        out = t.get("stdout") or ""
+        if os.path.exists(exp) and not a.update_expected:
+            if norm(open(exp, errors="replace").read()) != norm(out) and j["viz"] != "agent":
+                changed.append(j["id"])
+        else:
+            open(exp, "w").write(out)
+        page_url = f"{info['url']}/{os.path.splitext(j['page'].replace('_pages/', ''))[0]}" if j["page"].startswith("_pages") else ""
+        index[j["id"]] = {"id": j["id"], "viz": j["viz"], "lang": j["lang"], "page": j["page"], "line": j["line"],
+                          "page_url": page_url, "error": t.get("error"), "steps": len(t.get("steps") or [])}
+    json.dump({"course": info["course"], "site": info["url"], "built": time.strftime("%Y-%m-%d %H:%M"),
+               "examples": sorted(index.values(), key=lambda e: (e["page"], e["line"]))},
+              open(index_path, "w"), indent=1)
+    return changed, failed
+
+
+def collect(root, info, a, src):
+    jobs = []
+    for b in all_blocks(root, a.page):
+        lab = b["label"]
+        if not lab:
+            continue
+        if a.lang and (lab.get("lang") or b["lang"]) != a.lang:
+            continue
+        if getattr(a, "manifest_only", False):
+            break
+        if lab.get("viz") == "agent" and not getattr(a, "record_agents", False):
+            continue  # recorded on minipc, committed, replayed
+        jobs.append(job_for(b, root, src))
+    if getattr(a, "manifest_only", False):
+        jobs = []
+    if not a.page and not a.lang:
+        mpath = os.path.join(root, "viz", "manifest.json")
+        man = json.load(open(mpath)) if os.path.exists(mpath) else default_manifest(root, info["course"])
+        os.makedirs(os.path.dirname(mpath), exist_ok=True)
+        json.dump(man, open(mpath, "w"), indent=1)
+        jobs += manifest_jobs(root, src, man)
+    return jobs
+
+
+def cmd_build(a):
+    root = repo_root()
+    info = site_info(root)
+    src = tempfile.mkdtemp(prefix="code-viz-build-")
+    jobs = collect(root, info, a, src)
+    print(f"building {len(jobs)} example(s) for {info['course']}")
+    docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network)
+    try:
+        traces = run_jobs(jobs, docker, src)
+    finally:
+        docker.cleanup()
+        shutil.rmtree(src, ignore_errors=True)
+    changed, failed = write_site(root, info, traces, jobs, a)
+    print(f"wrote {len(jobs)} trace(s) to viz/; failed {len(failed)}; output changed {len(changed)}")
+    for vid, err in failed[:40]:
+        print(f"  failed {vid}: {str(err)[:140]}")
+    for vid in changed[:40]:
+        print(f"  changed {vid}")
+    # --check fails when an example stopped running; --strict also when an output changed
+    # (examples that use randomness or the clock change their output legitimately).
+    return 1 if (a.check and failed) or (a.strict and (changed or failed)) else 0
+
+
+def single_job(a, root, info, src):
+    target = a.target
+    if os.path.exists(target):
+        p = os.path.abspath(target)
+        ext = os.path.splitext(p)[1].lstrip(".")
+        viz = a.viz or ("automaton" if ext == "dot" else "bison" if os.path.isdir(p) or ext == "y" else
+                        "env" if ext in ("py", "scm", "rkt") else "c" if ext in ("c", "cpp") else "lambda" if ext == "lam" else "plain")
+        e = {"id": a.id or ("file-" + slug(p)), "viz": viz, "file": os.path.relpath(p, root) if p.startswith(root) else p,
+             "input": a.input or ""}
+        if os.path.isabs(e["file"]):
+            dst = os.path.join(src, e["id"])
+            if os.path.isdir(p):
+                shutil.copytree(p, dst, dirs_exist_ok=True)
+                fname = e["id"]
+            else:
+                os.makedirs(dst, exist_ok=True)
+                shutil.copy(p, dst)
+                fname = f"{e['id']}/{os.path.basename(p)}"
+            lang = {"py": "python", "scm": "scheme", "rkt": "scheme", "c": "c", "cpp": "cpp", "lam": "lambda", "hs": "haskell",
+                    "pl": "prolog", "ml": "ocaml", "sh": "shell"}.get(ext, "flexbison" if viz == "bison" else "dot" if viz == "automaton" else "python")
+            return {"id": e["id"], "viz": viz, "lang": lang, "file": fname, "input": e["input"], "timeout": 60,
+                    "max_steps": 800, "page": p, "line": 1}
+        if viz in ("bison", "automaton"):
+            return manifest_jobs(root, src, [e])[0]
+        b = {"label": {"id": e["id"], "viz": viz}, "lang": LANG_ALIASES.get(ext, ext), "code": open(p).read(), "page": e["file"], "start": 0}
+        return job_for(b, root, src)
+    for b in all_blocks(root):
+        if b["label"] and b["label"].get("id") == target:
+            return job_for(b, root, src)
+    mpath = os.path.join(root, "viz", "manifest.json")
+    for e in (json.load(open(mpath)) if os.path.exists(mpath) else default_manifest(root, info["course"])):
+        if e["id"] == target:
+            if a.input:
+                e["input"] = a.input
+            return manifest_jobs(root, src, [e])[0]
+    raise SystemExit(f"no example or file named {target}")
+
+
+def cmd_run(a):
+    root = repo_root()
+    info = site_info(root)
+    src = tempfile.mkdtemp(prefix="code-viz-run-")
+    job = single_job(a, root, info, src)
+    docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network)
+    try:
+        traces = run_jobs([job], docker, src)
+    finally:
+        docker.cleanup()
+    t = traces[job["id"]]
+    if os.path.isabs(job.get("page", "")) and not job["page"].startswith(root + os.sep):  # a file outside the site
+        json.dump(t, sys.stdout)
+        print()
+    else:
+        write_site(root, info, traces, [job], argparse.Namespace(update_expected=False))
+        print(f"{job['id']}: {len(t.get('steps') or [])} step(s), error: {t.get('error')}")
+        print(f"output:\n{(t.get('stdout') or '')[:2000]}")
+        print(f"view: {info['url']}/viz/#{job['id']}  (or code-viz serve {job['id']})")
+    return 0
+
+
+def cmd_serve(a):
+    root = repo_root()
+    info = site_info(root)
+    site = os.path.join(root, "viz")
+    os.makedirs(site, exist_ok=True)
+    for f in os.listdir(VIEWER):
+        shutil.copy(os.path.join(VIEWER, f), site)
+    os.makedirs(os.path.join(site, "tracers"), exist_ok=True)
+    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py"):
+        shutil.copy(os.path.join(TRACERS, f), os.path.join(site, "tracers"))
+    first = ""
+    if a.target:
+        cmd_run(argparse.Namespace(**{**vars(a), "id": None, "viz": None, "input": a.input}))
+        first = a.target if not os.path.exists(a.target) else "file-" + slug(os.path.abspath(a.target))
+    docker = Docker(a.host, keep=True, ollama_network=a.ollama_network)
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *x, **k):
+            super().__init__(*x, directory=root, **k)
+
+        def do_POST(self):
+            if self.path != "/viz/api/run":
+                self.send_error(404)
+                return
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            src = tempfile.mkdtemp(prefix="code-viz-live-")
+            b = {"label": {"id": "live", "viz": body.get("viz", "env"), "lang": body.get("lang"), "input": body.get("input")},
+                 "lang": body.get("lang", "python"), "code": body.get("code", ""), "page": "live", "start": 0}
+            job = job_for(b, root, src)
+            try:
+                t = run_jobs([job], docker, src)[job["id"]]
+            except Exception as e:
+                t = {"error": str(e), "steps": [], "stdout": ""}
+            data = json.dumps(t).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    print(f"serving {root} at http://localhost:{a.port}/viz/" + (f"#{first}" if first else "") + "  (Ctrl+C stops)")
+    try:
+        http.server.ThreadingHTTPServer(("0.0.0.0" if a.public else "127.0.0.1", a.port), H).serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        docker.keep = a.keep_images
+        docker.cleanup()
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="code-viz", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--host", help="run containers on this machine over SSH (user@host); default CODE_VIZ_HOST or local Docker")
+    ap.add_argument("--keep-images", action="store_true", help="keep runner images after the run")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("catalog", help="list examples and suggest labels")
+    c.add_argument("--page"); c.add_argument("-v", "--verbose", action="store_true"); c.set_defaults(fn=cmd_catalog)
+    l = sub.add_parser("label", help="apply suggested labels")
+    l.add_argument("--page"); l.add_argument("--lang"); l.add_argument("--viz")
+    l.add_argument("--try", dest="try_run", action="store_true", help="run candidates first; label only those that run")
+    l.add_argument("--links", action="store_true", help="add a Visualize link under each labeled block")
+    l.add_argument("--agents", action="store_true", help="also label agent examples (recorded, not re-run)")
+    l.add_argument("--ollama-network", help="Docker network with an Ollama container, for --try on agent examples")
+    l.set_defaults(fn=cmd_label)
+    r = sub.add_parser("run", help="run one example (id or file) and write its trace")
+    r.add_argument("target"); r.add_argument("--viz"); r.add_argument("--input"); r.add_argument("--id")
+    r.add_argument("--ollama-network"); r.set_defaults(fn=cmd_run)
+    b = sub.add_parser("build", help="run every example and write the viewer site to viz/")
+    b.add_argument("--page"); b.add_argument("--lang"); b.add_argument("--check", action="store_true")
+    b.add_argument("--strict", action="store_true", help="with --check, also fail when an output changed")
+    b.add_argument("--update-expected", action="store_true"); b.add_argument("--record-agents", action="store_true")
+    b.add_argument("--manifest-only", action="store_true", help="only the grammars and automata in viz/manifest.json")
+    b.add_argument("--ollama-network"); b.set_defaults(fn=cmd_build)
+    s = sub.add_parser("serve", help="serve the viewer with live re-runs")
+    s.add_argument("target", nargs="?"); s.add_argument("--port", type=int, default=8765); s.add_argument("--input")
+    s.add_argument("--public", action="store_true", help="listen on all interfaces, not just this machine")
+    s.add_argument("--ollama-network"); s.set_defaults(fn=cmd_serve)
+    a = ap.parse_args()
+    sys.exit(a.fn(a) or 0)
+
+
+if __name__ == "__main__":
+    main()
