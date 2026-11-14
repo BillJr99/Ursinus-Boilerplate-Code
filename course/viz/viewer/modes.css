@@ -25,7 +25,14 @@ body[data-mode="explain"] .code .ln.fresh { animation: cviz-fresh 1.4s ease-out;
 .answer { border-left: 3px solid var(--ok); padding-left: 8px; }
 .badge.draft { background: transparent; color: var(--muted); border: 1px dashed var(--muted); border-radius: 4px; padding: 0 5px; font-size: 11px; font-weight: 400; }
 
-/* Simulate mode: terminal replay, prompt, docker ps, diagram. */
+/* Simulate mode: the terminal emulator box keeps the recorded width; on a narrow screen the font
+   shrinks to fit (mode-simulate.js) and, past that, the box scrolls sideways, never the page. */
+.simterm { background: #1d2330; border-radius: 8px; padding: 6px; overflow-x: auto; max-width: 100%; box-sizing: border-box; }
+.simterm[hidden] { display: none; }
+.simterm .xterm { display: inline-block; }
+.simterm.plainterm { color: #e6e9ef; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; min-height: 200px; }
+.extra .sep { display: inline-block; width: 10px; }
+/* Simulate mode: plain-text fallback, prompt, docker ps, diagram. */
 body[data-mode="simulate"] .code { white-space: pre-wrap; }
 .tline { font-weight: 600; }
 .tline .prompt { color: var(--ok); }

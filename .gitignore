@@ -43,3 +43,4 @@ desktop.ini
 .DS_Store
 
 *.objdump
+.dockrun-out/

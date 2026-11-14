@@ -900,6 +900,14 @@ docker run --rm -v $PWD:/w -w /w mcr.microsoft.com/playwright/python:v1.48.0-jam
 
 Remove the Playwright image and any containers and networks afterwards.
 
+`tests/test_modes.py` holds unit tests for the tour and session checks, publishing (including a
+display-only example and a withdrawn tour), masking, the plain-text copy and `record --check`'s
+comparison. They need no Docker inside:
+
+```
+docker run --rm -v $PWD:/w -w /w/code/course/viz python:3.12-slim python3 -m unittest discover -s tests -v
+```
+
 ## 21. Modes and URL arguments
 
 The viewer shows an example in up to three modes. A tab for each mode sits in the header, in the
@@ -1088,20 +1096,39 @@ How each command runs, so a recording looks like a student's terminal and does n
 - every command runs under a pseudo-terminal of a fixed size (100 columns by 30 rows) with its input
   at end of file, so `docker run -it ...` and other programs that want a terminal work without anyone
   typing; a command that waits for typed input sees end of file and goes on;
-- the output is kept twice: `raw`, with the terminal's control codes (colors, cursor moves), for the
-  terminal view, and `output`, plain text with the control codes removed, which comparison and drift
-  checks use, so a color change is not drift.
+- the output is kept twice: `cast`, the terminal output as timestamped chunks (`[[seconds since the
+  command started, text], ...]`, like asciinema's cast v2, control codes kept), which the viewer
+  replays at the pace it ran; and `output`, plain text with the control codes removed and a `\r`
+  progress line kept as its last version, which comparison and drift checks use, so a color change
+  or a progress bar's timing is not drift. The terminal's size is in `recorded.cols` and `rows`.
 
 `code-viz session check` reports a scenario that has not been recorded, and a recording whose
 scenario changed since (it is stale; record it again). `code-viz record --check <id>` records again
 and lists what changed, so a new Docker version that changes a message shows up as a difference to
 look at, not a stale slide.
 
-The Simulate view: the terminal replay on the left, and on the right a `docker ps` panel and a
-diagram of containers, the networks that join them, published ports and mounted folders, updated at
-every step. Below the terminal, students can type the next command: if it is the command that was
-recorded (spacing aside), the recording plays; if it is not, they get a hint toward the expected
-command. Recorded branches are listed as buttons beside the step controls.
+The Simulate view shows the session as if it ran live. On the left is a real terminal emulator
+(xterm.js 5.3.0, pinned, from jsDelivr, loaded the first time Simulate opens), so colors, cursor
+moves, `\r` progress bars, `clear` and full-screen programs look as they did; the screen stays from
+one command to the next, with scrollback.
+
+- Next (the `>` button, Space or the right arrow) types the next command at the prompt, then plays
+  its output at the recorded pace. The speed buttons beside the controls set 1x, fast (four times)
+  or instant; at 1x a pause longer than 2 seconds is shortened to 2. Next while a command is still
+  playing finishes it at once.
+- Back (`<`, the left arrow), the slider, Home and `&s=N` rebuild the exact screen at that point at
+  once from the recording. The slider's first position is the first prompt, before anything ran.
+- Below the terminal, students can type the next command: if it is the command that was recorded
+  (spacing aside), it plays exactly as Next would; if not, they get a hint toward the expected
+  command, never output.
+- On the right, a `docker ps` table, a diagram of containers grouped by network with published ports
+  and mounted folders, the images, volumes and watched folders' files, as they were when the current
+  command finished.
+- Recorded branches are buttons beside the speed control; choosing one starts again at the first
+  prompt on that branch.
+- On a phone the terminal keeps the recorded width and shrinks its font to fit, down to 9 px, then
+  scrolls sideways inside its own box; the page never scrolls sideways.
+- Offline, before xterm.js has ever loaded, the terminal falls back to plain text.
 """
 import argparse
 import gzip

@@ -267,9 +267,9 @@ def block_commands(code):
         s = line.rstrip()
         if not cur and (not s.strip() or s.strip().startswith("#")):
             continue
-        s = re.sub(r"^\s*\$\s+", "", s) if not cur else s
+        s = re.sub(r"^\s*\$\s+", "", s) if not cur else s.strip()
         if s.endswith("\\"):
-            cur += s[:-1] + " "
+            cur += s[:-1].rstrip() + " "
             continue
         cmds.append((cur + s).strip())
         cur = ""
@@ -695,6 +695,18 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
         docker.sh(["rm", "-f", dind], check=False)          # --rm also drops its anonymous volume
         docker.sh(["network", "rm", inet], check=False)
         docker.retire(rdir)
+        retire_local(local)
+
+
+def retire_local(path):
+    """Move a local temporary folder to ~/scratch/code-viz (never deleted; Bill's rule)."""
+    import shutil
+    dst = os.path.join(os.path.expanduser("~"), "scratch", "code-viz")
+    try:
+        os.makedirs(dst, exist_ok=True)
+        shutil.move(path, os.path.join(dst, os.path.basename(path)))
+    except OSError:
+        pass
 
 
 def shlex_quote(s):
@@ -727,9 +739,10 @@ def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host
                 ctx = tempfile.mkdtemp(prefix="code-viz-shell-")
                 lines = [f"FROM {base}"] + [f"RUN {c}" for c in sh.get("setup") or []]
                 open(os.path.join(ctx, "Dockerfile"), "w").write("\n".join(lines) + "\n")
-                rctx = docker.remote_dir(ctx, "shell-image")
+                rctx = docker.remote_dir(ctx, "shell-image")   # moves to ~/scratch at cleanup
                 docker.sh(["build", "-q", "--network", "host", "--label", "code-viz=1", "-t", shell_tag, rctx], timeout=3600)
                 docker.mine.add(shell_tag)
+                retire_local(ctx)
         runs = [record_once(docker, scn["commands"], scn, tag, None, shell_tag, tracers, session_tag, host_shell)]
         branches = []
         for b in doc.get("branches") or []:
@@ -741,16 +754,21 @@ def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host
         for img in pulled:                       # images this recording pulled; ones already there stay
             docker.sh(["rmi", img], check=False)
     names = _random_names([r["steps"] for r in runs], scn["commands"] + [c for b in doc.get("branches") or [] for c in b["commands"]])
-    mask = Masker(scn.get("workdir", "/work"), names, doc.get("masking"))
 
     def finish(steps):
+        # One masker per run: a branch runs from the start in a fresh sandbox, so its shared prefix
+        # numbers ids and names the same way the main line does.
+        mask = Masker(scn.get("workdir", "/work"), names, doc.get("masking"))
         out = []
         for st in steps:
-            raw = strip_eof_echo(mask(st["raw"]).replace("\r\n", "\n"))
-            text = plain(mask(st["raw"]))
-            s = {"cmd": st["cmd"], "output": text, "exit": st["exit"], "duration": st["duration"], "state": mask(st["state"])}
-            if raw != text:
-                s["raw"] = raw
+            cast = coalesce(st.get("cast") or [[0, st.get("raw", "")]])
+            cast = [[t, mask(x)] for t, x in cast]
+            if cast:                                  # the echo of the end-of-input character
+                cast[0][1] = strip_eof_echo(cast[0][1])
+            cast = [c for c in cast if c[1]]
+            raw = "".join(x for _, x in cast)
+            s = {"cmd": st["cmd"], "output": plain(raw), "exit": st["exit"], "duration": st["duration"],
+                 "cast": cast, "state": mask(st["state"])}
             out.append(s)
         return out
 
@@ -759,8 +777,21 @@ def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host
     if branches:
         rec["branches"] = [dict(b, steps=finish(got["steps"])[b["after"]:]) for b, got in branches]
     rec["recorded"] = {"at": today, "host": host_name, "sandbox": DIND_IMAGE, "docker": runs[0].get("docker", ""),
-                       "scenario_sha": scenario_sha(scn)}
+                       "scenario_sha": scenario_sha(scn), "cols": (runs[0].get("term") or {}).get("cols", 100),
+                       "rows": (runs[0].get("term") or {}).get("rows", 30)}
     return rec
+
+
+def coalesce(cast, gap=0.05):
+    """Join output chunks less than `gap` seconds apart, so an id or a word split across two reads is
+    masked as one, and the recording stays small. Pacing coarser than 50 ms is kept."""
+    out = []
+    for t, x in cast:
+        if out and t - out[-1][0] < gap:
+            out[-1][1] += x
+        else:
+            out.append([t, x])
+    return out
 
 
 def compare(old, new):
@@ -778,7 +809,14 @@ def compare(old, new):
     for i, (a, b) in enumerate(zip(os_, ns)):
         line(i, a, b, "main line")
     ob = {b["name"]: b for b in old.get("branches") or []}
-    for b in new.get("branches") or []:
-        for i, (x, y) in enumerate(zip(ob.get(b["name"], {}).get("steps") or [], b.get("steps") or [])):
-            line(i, x, y, f"branch {b['name']}")
+    nb = {b["name"]: b for b in new.get("branches") or []}
+    for name in sorted(set(ob) | set(nb)):
+        if name not in ob or name not in nb:
+            diffs.append(f"branch {name}: {'added' if name in nb else 'removed'}")
+            continue
+        xs, ys = ob[name].get("steps") or [], nb[name].get("steps") or []
+        if len(xs) != len(ys):
+            diffs.append(f"branch {name}: {len(xs)} step(s) recorded before, {len(ys)} now")
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            line(i, x, y, f"branch {name}")
     return diffs

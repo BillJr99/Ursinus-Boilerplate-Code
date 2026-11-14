@@ -4,42 +4,141 @@
   "title": "code-viz session (Simulate mode), version 1",
   "description": "A recorded terminal session (shell and Docker commands run for real in a throwaway sandbox on the recording host) that the viewer replays step by step. The scenario (what to run) is the source: <course repo>/codeviz/sessions/<id>.json or .yaml, or the commands of a shell block labeled viz=session. `code-viz record <id>` runs it and writes the recording (scenario plus steps, masked) to viz/sessions/<id>.json.gz, which is committed; CI never re-records. Manual: `code-viz readme`, section 23.",
   "type": "object",
-  "required": ["version", "id", "title", "scenario"],
+  "required": [
+    "version",
+    "id",
+    "title",
+    "scenario"
+  ],
   "additionalProperties": false,
   "properties": {
-    "$schema": {"type": "string"},
-    "version": {"const": 1},
-    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-    "title": {"type": "string", "minLength": 1},
-    "description": {"type": "string"},
-    "page": {"type": "string", "description": "The course page the session belongs to (set by record for viz=session blocks)."},
-    "scenario": {"$ref": "#/$defs/scenario"},
-    "masking": {"type": "array", "items": {"$ref": "#/$defs/mask"}, "description": "Extra masking rules, applied after the built-in ones (container and image ids, sha256 digests, timestamps, Docker's random container names, temp paths)."},
-    "recorded": {"$ref": "#/$defs/recorded"},
-    "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}, "description": "Filled in by `code-viz record`; empty or absent in a scenario that has not been recorded."},
-    "branches": {"type": "array", "items": {"$ref": "#/$defs/branch"}}
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "page": {
+      "type": "string",
+      "description": "The course page the session belongs to (set by record for viz=session blocks)."
+    },
+    "scenario": {
+      "$ref": "#/$defs/scenario"
+    },
+    "masking": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mask"
+      },
+      "description": "Extra masking rules, applied after the built-in ones (container and image ids, sha256 digests, timestamps, Docker's random container names, temp paths)."
+    },
+    "recorded": {
+      "$ref": "#/$defs/recorded"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "description": "Filled in by `code-viz record`; empty or absent in a scenario that has not been recorded."
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/branch"
+      }
+    }
   },
   "$defs": {
     "scenario": {
       "type": "object",
-      "required": ["commands"],
+      "required": [
+        "commands"
+      ],
       "additionalProperties": false,
       "properties": {
-        "commands": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Shell commands run in order in one shell inside the sandbox (cd and variables carry over)."},
-        "images": {"type": "array", "items": {"type": "string"}, "description": "Images pulled into the sandbox before the first command, each pinned to a tag (and ideally a digest), never 'latest'."},
-        "network": {"enum": ["none", "isolated", "internet"], "default": "isolated", "description": "none: no network for the session's containers; isolated: the sandbox's own Docker networks only; internet: the sandbox may reach the internet (needed to pull, or for curl examples)."},
-        "files": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Files written into the session's work folder before the first command (path -> content)."},
-        "workdir": {"type": "string", "default": "/work", "description": "The work folder: the shell starts there and HOME is set to it, so $HOME/... and ~/... paths land inside it; its absolute path is masked to ~ in the recording."},
-        "watch": {"type": "array", "items": {"type": "string"}, "description": "Folders, relative to the work folder (HOME), whose file listing is snapshotted after each command (for mounts)."},
-        "timeout": {"type": "integer", "minimum": 1, "default": 120, "description": "Seconds per command."},
+        "commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Shell commands run in order in one shell inside the sandbox (cd and variables carry over)."
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Images pulled into the sandbox before the first command, each pinned to a tag (and ideally a digest), never 'latest'."
+        },
+        "network": {
+          "enum": [
+            "none",
+            "isolated",
+            "internet"
+          ],
+          "default": "isolated",
+          "description": "none: no network for the session's containers; isolated: the sandbox's own Docker networks only; internet: the sandbox may reach the internet (needed to pull, or for curl examples)."
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Files written into the session's work folder before the first command (path -> content)."
+        },
+        "workdir": {
+          "type": "string",
+          "default": "/work",
+          "description": "The work folder: the shell starts there and HOME is set to it, so $HOME/... and ~/... paths land inside it; its absolute path is masked to ~ in the recording."
+        },
+        "watch": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Folders, relative to the work folder (HOME), whose file listing is snapshotted after each command (for mounts)."
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 120,
+          "description": "Seconds per command."
+        },
         "shell": {
           "type": "object",
-          "required": ["image"],
+          "required": [
+            "image"
+          ],
           "additionalProperties": false,
           "description": "Run the commands in a shell inside a container from this image instead of the sandbox's own shell (which has only the Docker CLI). The commands run unchanged, in order, in one shell, with the work folder as the working directory. The setup commands are baked into a derived image when recording (with network), then the commands run under the scenario's network policy. DOCKER_HOST points at the sandbox's Docker daemon, so docker commands still work.",
           "properties": {
-            "image": {"type": "string", "pattern": "^[^:@\\s]+[:@][^\\s]+$", "description": "A pinned image (name:tag or name@sha256:...), never 'latest'."},
-            "setup": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Commands run once when the image is built (for example apt-get install). Not recorded and not shown."}
+            "image": {
+              "type": "string",
+              "pattern": "^[^:@\\s]+[:@][^\\s]+$",
+              "description": "A pinned image (name:tag or name@sha256:...), never 'latest'."
+            },
+            "setup": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Commands run once when the image is built (for example apt-get install). Not recorded and not shown."
+            }
           }
         }
       }
@@ -48,55 +147,224 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "at": {"type": "string", "description": "Recording date (YYYY-MM-DD)."},
-        "host": {"type": "string"},
-        "sandbox": {"type": "string", "description": "The Docker-in-Docker image used, pinned."},
-        "docker": {"type": "string", "description": "Docker server version inside the sandbox."},
-        "scenario_sha": {"type": "string", "description": "sha256 of the scenario as recorded; build reports a session whose scenario changed since as stale."}
+        "at": {
+          "type": "string",
+          "description": "Recording date (YYYY-MM-DD)."
+        },
+        "host": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string",
+          "description": "The Docker-in-Docker image used, pinned."
+        },
+        "docker": {
+          "type": "string",
+          "description": "Docker server version inside the sandbox."
+        },
+        "scenario_sha": {
+          "type": "string",
+          "description": "sha256 of the scenario as recorded; build reports a session whose scenario changed since as stale."
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Terminal width the session was recorded at."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Terminal height the session was recorded at."
+        }
       }
     },
     "mask": {
       "type": "object",
-      "required": ["pattern", "label"],
+      "required": [
+        "pattern",
+        "label"
+      ],
       "additionalProperties": false,
-      "properties": {"pattern": {"type": "string", "description": "Python regular expression."}, "label": {"type": "string", "description": "Replacement; {n} becomes a per-match counter (<id-1>, <id-2> ...)."}}
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Python regular expression."
+        },
+        "label": {
+          "type": "string",
+          "description": "Replacement; {n} becomes a per-match counter (<id-1>, <id-2> ...)."
+        }
+      }
     },
     "step": {
       "type": "object",
-      "required": ["cmd", "output", "exit"],
+      "required": [
+        "cmd",
+        "output",
+        "exit"
+      ],
       "additionalProperties": false,
       "properties": {
-        "cmd": {"type": "string"},
-        "output": {"type": "string", "description": "Plain text: stdout and stderr interleaved as the terminal showed them, control codes removed, masked. Used for comparison and drift checks."},
-        "raw": {"type": "string", "description": "The same output with the terminal's control codes (colors, cursor moves), for the terminal view. Absent when it equals output."},
-        "exit": {"type": "integer"},
-        "duration": {"type": "number", "minimum": 0, "description": "Seconds, rounded to 0.1 (shown, never used for playback timing)."},
-        "note": {"type": "string", "description": "Optional teaching note shown with the step."},
-        "state": {"$ref": "#/$defs/state"}
+        "cmd": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string",
+          "description": "Plain text: what the terminal showed, control codes removed, \\r progress lines kept as their last version, masked. Used for comparison and drift checks."
+        },
+        "exit": {
+          "type": "integer"
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds, rounded to 0.1 (shown, never used for playback timing)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional teaching note shown with the step."
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "cast": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "items": {}
+          },
+          "description": "The terminal output as timestamped chunks, [[seconds since the command started, text], ...] (like asciinema cast v2), masked, control codes kept; the viewer replays them through a terminal emulator at this pace."
+        }
       }
     },
     "state": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "containers": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "image": {"type": "string"}, "status": {"type": "string"}, "ports": {"type": "array", "items": {"type": "string"}}, "networks": {"type": "array", "items": {"type": "string"}}, "mounts": {"type": "array", "items": {"type": "string"}}}, "required": ["name"]}},
-        "images": {"type": "array", "items": {"type": "string"}},
-        "networks": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "driver": {"type": "string"}, "containers": {"type": "array", "items": {"type": "string"}}}, "required": ["name"]}},
-        "volumes": {"type": "array", "items": {"type": "string"}},
-        "files": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}, "description": "watched folder -> sorted entries (directories end with /)."}
+        "containers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "ports": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "networks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mounts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "networks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "driver": {
+                "type": "string"
+              },
+              "containers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "watched folder -> sorted entries (directories end with /)."
+        }
       }
     },
     "branch": {
       "type": "object",
-      "required": ["name", "after", "commands"],
+      "required": [
+        "name",
+        "after",
+        "commands"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
-        "title": {"type": "string"},
-        "description": {"type": "string", "description": "What goes differently, for example 'forgot -v, so the container cannot see the folder'."},
-        "after": {"type": "integer", "minimum": 0, "description": "Number of main-line steps run before the branch's commands (0 = from the start)."},
-        "commands": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-        "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}}
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "description": "What goes differently, for example 'forgot -v, so the container cannot see the folder'."
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of main-line steps run before the branch's commands (0 = from the start)."
+        },
+        "commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
       }
     }
   }

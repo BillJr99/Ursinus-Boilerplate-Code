@@ -12,8 +12,9 @@ exported variables carry over from one command to the next (saved in /tmp/cviz a
 so `cd` and `export` behave as in one terminal. With --shell, each command runs inside that container
 (a scenario `shell` image, started by code-viz record in the sandbox) through `docker exec -it`.
 
-After each command it saves the output as the terminal showed it (`raw`, with control codes), the
-exit status, the time it took, and a snapshot of the sandbox: containers (name, image, status,
+After each command it saves the output as the terminal showed it, as timestamped chunks (`cast`:
+[[seconds since the command started, text], ...], like asciinema's cast v2), so the viewer can replay
+it at the pace it ran; the exit status; the time it took; and a snapshot of the sandbox: containers (name, image, status,
 published ports, networks, mounts), images, networks, volumes, and the file listing of each watched
 folder. DOCKER_HOST points at the sandbox, so every docker command here talks to the sandbox's own
 daemon. Masking and the plain-text `output` are done afterwards by code-viz on the recording host.
@@ -92,10 +93,11 @@ def snapshot(work, watch, shell_image):
 
 
 def run(cmd, work, timeout, shell):
-    """Run one command under a pseudo-terminal; returns (raw output, exit status, seconds)."""
+    """Run one command under a pseudo-terminal; returns (chunks [[seconds, text]], exit status, seconds)."""
     prelude = ("mkdir -p /tmp/cviz; cd \"$(cat /tmp/cviz/cwd 2>/dev/null || echo \"$HOME\")\"; "
                "[ -f /tmp/cviz/env ] && . /tmp/cviz/env; ")
-    tail = "; __rc=$?; pwd > /tmp/cviz/cwd; export -p > /tmp/cviz/env; exit $__rc"
+    # A newline, not "; ", so a command ending in "&" or in a "# comment" cannot swallow the tail.
+    tail = "\n__rc=$?; pwd > /tmp/cviz/cwd; export -p > /tmp/cviz/env; exit $__rc"
     script = prelude + cmd + tail
     if shell:
         argv = ["docker", "exec", "-it", "-e", f"HOME={work}", "-e", f"COLUMNS={COLS}", "-e", f"LINES={ROWS}",
@@ -115,12 +117,27 @@ def run(cmd, work, timeout, shell):
     except OSError:
         pass
     out = bytearray()
+    chunks = []                       # [[seconds since start, bytes]]
     rc = None
+    cut = [False]
+
+    def keep(chunk):
+        """Keep output up to 400000 bytes, then one notice; later output is read (so the program never
+        blocks on a full terminal) but dropped."""
+        if cut[0]:
+            return
+        room = 400000 - len(out)
+        if len(chunk) > room:
+            chunk, cut[0] = chunk[:room], True
+        out.extend(chunk)
+        chunks.append([round(time.time() - t0, 3), chunk])
+        if cut[0]:
+            chunks.append([round(time.time() - t0, 3), b"\r\n[code-viz: output cut at 400000 bytes]\r\n"])
     while True:
         left = timeout - (time.time() - t0)
         if left <= 0:
             os.kill(pid, signal.SIGKILL)
-            out += f"\n[code-viz: stopped after {timeout} s]\n".encode()
+            chunks.append([round(time.time() - t0, 3), f"\r\n[code-viz: stopped after {timeout} s]\r\n".encode()])
             os.waitpid(pid, 0)
             rc = 124
             break
@@ -131,9 +148,7 @@ def run(cmd, work, timeout, shell):
             except OSError:
                 chunk = b""
             if chunk:
-                out += chunk
-                if len(out) > 400000:
-                    out = out[:400000] + b"\n[code-viz: output cut at 400000 bytes]\n"
+                keep(chunk)
                 continue
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:
@@ -142,13 +157,22 @@ def run(cmd, work, timeout, shell):
                     chunk = os.read(fd, 65536)
                     if not chunk:
                         break
-                    out += chunk
+                    keep(chunk)
             except OSError:
                 pass
             rc = os.waitstatus_to_exitcode(status)
             break
     os.close(fd)
-    return out.decode("utf-8", errors="replace"), rc, round(time.time() - t0, 1)
+    # Decode the chunks together, so a character split across two reads stays whole.
+    dec, cast = __import__("codecs").getincrementaldecoder("utf-8")(errors="replace"), []
+    for t, b in chunks:
+        s = dec.decode(b)
+        if s:
+            cast.append([t, s])
+    tail = dec.decode(b"", final=True)
+    if tail:
+        cast.append([round(time.time() - t0, 3), tail])
+    return cast, rc, round(time.time() - t0, 1)
 
 
 def main():
@@ -165,11 +189,11 @@ def main():
         open("/tmp/cviz/cwd", "w").write(work + "\n")
     steps = []
     for cmd in scn["commands"]:
-        raw, rc, secs = run(cmd, work, scn.get("timeout", 120), shell)
-        steps.append({"cmd": cmd, "raw": raw, "exit": rc, "duration": secs,
+        cast, rc, secs = run(cmd, work, scn.get("timeout", 120), shell)
+        steps.append({"cmd": cmd, "cast": cast, "exit": rc, "duration": secs,
                       "state": snapshot(work, scn.get("watch", []), shell_image)})
     ver = docker("version", "--format", "{{.Server.Version}}").strip()
-    json.dump({"steps": steps, "docker": ver}, open(outp, "w"))
+    json.dump({"steps": steps, "docker": ver, "term": {"cols": COLS, "rows": ROWS}}, open(outp, "w"))
 
 
 if __name__ == "__main__":

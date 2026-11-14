@@ -180,9 +180,9 @@
       const names = ctx.meta.tours || [""];
       S.name = names.includes(name) ? name : (names[0] || "");
       if (name && S.name !== name) ctx.note(`This example has no tour named "${name}"; showing its ${S.name ? '"' + S.name + '"' : "default"} tour.`);
-      if (S.id !== ctx.id || !S.tour || S.tour.name !== (S.name || undefined)) {
+      if (S.id !== ctx.id || !S.tour || S.loaded !== S.name) {
         S.tour = await ctx.fetchJson("tours/" + encodeURIComponent(ctx.id) + (S.name ? "--" + S.name : "") + ".json");
-        S.id = ctx.id; S.traces = {}; S.prevCode = null; S.step = 0;
+        S.id = ctx.id; S.loaded = S.name; S.traces = {}; S.prevCode = null; S.step = 0;
       }
       if (ctx.pos !== undefined) S.step = ctx.pos;
       await hljs();
