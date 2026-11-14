@@ -797,8 +797,8 @@ MODULE_HEAD = re.compile(r"^#\s*([A-Za-z_][\w]*\.py)(\s*\(continued\))?\s*$")
 def interp_files(root, page):
     """interp=: the Python interpreter a page builds, as {file name: code}, in page order.
 
-    A Python block whose first line is `# name.py` starts that file; `# name.py (continued)` appends
-    to it. Blocks without such a heading (demos, tests) are not part of the interpreter."""
+    A Python block whose first line is `# name.py` starts that file (again, if it already began);
+    `# name.py (continued)` appends to it. Blocks without such a heading (demos, tests) are not part of the interpreter."""
     files = {}
     for b in blocks(root, page)[0]:
         if b["lang"] != "python":
@@ -806,7 +806,10 @@ def interp_files(root, page):
         first = b["code"].lstrip("\n").split("\n", 1)[0].strip()
         m = MODULE_HEAD.match(first)
         if m and not m.group(1).startswith("test_"):
-            files.setdefault(m.group(1), []).append(b["code"])
+            if m.group(2):   # (continued): append to the file
+                files.setdefault(m.group(1), []).append(b["code"])
+            else:            # a bare heading starts the file again (a later block rewriting a module)
+                files[m.group(1)] = [b["code"]]
     return {f: "\n\n".join(parts) + "\n" for f, parts in files.items()}
 
 

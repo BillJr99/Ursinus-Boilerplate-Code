@@ -42,6 +42,7 @@ run before plain Python by SETUP_WRAP, and copied into the trace as {"setup": {"
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -99,7 +100,7 @@ def plain(job):
         for x in os.listdir(idir):
             shutil.copy(os.path.join(idir, x), work)
         shutil.copy(path, os.path.join(work, "program.mini"))
-        cmd = [sys.executable] + [w.replace("{file}", "program.mini") for w in job.get("entry", "runner.py --file {file}").split()]
+        cmd = [sys.executable] + [w.replace("{file}", "program.mini") for w in shlex.split(job.get("entry", "runner.py --file {file}"))]
         r = sh(cmd, to, work, inp)
     elif lang == "mini":
         work = tempfile.mkdtemp()
