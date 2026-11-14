@@ -411,10 +411,11 @@ commits nothing when nothing changed. Two mechanisms, both inside code-viz (no c
 1. *Repeatable Python.* `tracers/pystubs/sitecustomize.py` loads at interpreter start in every
    Python example: `random` is seeded (CVIZ_SEED, default 0) and numpy's global generator is seeded
    right after numpy is imported, so random examples print the same numbers every time; the wall
-   clock (`time.time`, `time.time_ns`, `datetime.now`/`utcnow`/`today`, `date.today`) starts at a
-   fixed instant (CVIZ_EPOCH, default 2026-01-05 09:00 UTC) and then runs at the real rate, so
-   dates and clock times print the same while elapsed times stay real. `time.monotonic` and
-   `time.perf_counter` are untouched (asyncio and timing examples need them). Set CVIZ_REAL_RUN=1
+   clock (`time.time`, `time.time_ns`) starts at a fixed instant (CVIZ_EPOCH, default 2026-01-05
+   09:00 UTC) and then runs at the real rate, so timestamps print the same while elapsed times stay
+   real. `time.monotonic` and `time.perf_counter` are untouched (asyncio and timing examples need
+   them), and so is `datetime.now()` (replacing the datetime classes breaks pickling and pandas;
+   settle handles its dates). Set CVIZ_REAL_RUN=1
    to turn this off for a run.
 2. *Settle.* Some values cannot be made repeatable: what a benchmark measures, C stack addresses
    (the kernel randomizes them in a container), library handles, file dates in `ls -l`. After a
@@ -1203,14 +1204,25 @@ def blocks(root, page):
 def solution_lines(lines):
     """For each line: is it inside a <details> whose <summary> names a solution or answer key ("Click
     to reveal a solution to Exercise 3")? Such blocks are never labeled (section 4)."""
-    out, stack = [], []
+    out, stack, summary = [], [], None     # summary: text of a <summary> still open on earlier lines
     for line in lines:
         low = line.lower()
         for _ in range(low.count("<details")):
             stack.append(False)
         m = re.search(r"<summary[^>]*>(.*?)(</summary>|$)", line, re.I)
-        if m and stack:
-            stack[-1] = bool(SOLUTION.search(re.sub(r"<[^>]+>", "", m.group(1))))
+        if m:
+            summary = m.group(1)
+            if m.group(2):
+                summary_done = True
+            else:
+                summary_done = False
+        elif summary is not None:
+            summary += " " + line.split("</summary>")[0]
+            summary_done = "</summary>" in low
+        if summary is not None and stack:
+            stack[-1] = stack[-1] or bool(SOLUTION.search(re.sub(r"<[^>]+>", "", summary)))
+        if summary is not None and summary_done:
+            summary = None
         out.append(any(stack))
         for _ in range(low.count("</details>")):
             if stack:
@@ -1343,14 +1355,16 @@ def interp_page(lab, b):
 
 def suggest(b):
     """A suggested label for an unlabeled block, or None when it is not a runnable example.
-    langs.suggest adds SQL, Java, JavaScript, MIPS and VHDL, and the C fork/thread rule."""
+    langs.suggest adds SQL, Java, JavaScript, MIPS and VHDL, and the C fork/thread rule. A block under a
+    Solution / Answer key heading or in a "reveal a solution" <details> is never suggested, in any
+    language (section 4)."""
+    if SOLUTION.search(b.get("heading") or "") or b.get("in_solution"):
+        return None
     return LX.suggest(b, _suggest_base(b))
 
 
 def _suggest_base(b):
     code, lang = b["code"], b["lang"]
-    if SOLUTION.search(b.get("heading") or "") or b.get("in_solution"):
-        return None     # under a Solution / Answer key heading, or in a "reveal a solution" <details>: never labeled
     n = len([l for l in code.splitlines() if l.strip()])
     if lang == "python" and n >= 3:
         import ast
@@ -1529,10 +1543,13 @@ def data_files(b, root, lookup=None):
         return {}
     code = b["code"] + "\n" + ((b.get("label") or {}).get("setup_src") or "")
     lab = b.get("label") or {}
-    for sid in [x for x in (lab.get("setup") or "").split(",") if x]:
-        sb = (lookup or {}).get(sid)
-        if sb:
-            code += "\n" + sb["code"]
+    ids = [x for x in (lab.get("setup") or "").split(",") if x]
+    if ids:
+        try:
+            for sb in setup_chain(ids, lookup or block_lookup(root)):   # the whole chain, not just direct ids
+                code += "\n" + sb["code"]
+        except ValueError:
+            pass
     names = sorted(set(DATA_NAME.findall(code)))
     if not names:
         return {}
@@ -2084,7 +2101,8 @@ def settle(root, jobs, traces, docker, src):
         first, second = trace_text(traces[vid], by[vid]), trace_text(again.get(vid, {}), by[vid])
         old = stored_text(root, vid)
         if first != second and same_example(json.loads(first), json.loads(old)):
-            traces[vid] = dict(json.loads(old), _kept=True)
+            # keep the committed trace file; expected outputs are still checked against this run
+            traces[vid] = dict(json.loads(old), _kept=True, _first_stdout=traces[vid].get("stdout") or "")
             kept.append(vid)
     return traces, kept
 
@@ -2199,10 +2217,11 @@ def write_site(root, info, traces, jobs, a):
         t.setdefault("kind", j["viz"])
         if t.get("error") and not t.get("steps") and not t.get("stdout"):
             failed.append((j["id"], t["error"]))
+        first_out = t.pop("_first_stdout", None)
         if not t.pop("_kept", False):   # settle() kept the committed trace: leave its file untouched
             save_trace(os.path.join(site, "traces", j["id"] + ".json"), t)
         exp = os.path.join(site, "expected", j["id"] + ".out")
-        out = t.get("stdout") or ""
+        out = t.get("stdout") or "" if first_out is None else first_out   # expected: this run's output
         if os.path.exists(exp) and not a.update_expected:
             if norm(open(exp, errors="replace").read()) != norm(out) and j["viz"] != "agent":
                 changed.append(j["id"])

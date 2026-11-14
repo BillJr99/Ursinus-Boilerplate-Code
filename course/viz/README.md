@@ -412,10 +412,11 @@ commits nothing when nothing changed. Two mechanisms, both inside code-viz (no c
 1. *Repeatable Python.* `tracers/pystubs/sitecustomize.py` loads at interpreter start in every
    Python example: `random` is seeded (CVIZ_SEED, default 0) and numpy's global generator is seeded
    right after numpy is imported, so random examples print the same numbers every time; the wall
-   clock (`time.time`, `time.time_ns`, `datetime.now`/`utcnow`/`today`, `date.today`) starts at a
-   fixed instant (CVIZ_EPOCH, default 2026-01-05 09:00 UTC) and then runs at the real rate, so
-   dates and clock times print the same while elapsed times stay real. `time.monotonic` and
-   `time.perf_counter` are untouched (asyncio and timing examples need them). Set CVIZ_REAL_RUN=1
+   clock (`time.time`, `time.time_ns`) starts at a fixed instant (CVIZ_EPOCH, default 2026-01-05
+   09:00 UTC) and then runs at the real rate, so timestamps print the same while elapsed times stay
+   real. `time.monotonic` and `time.perf_counter` are untouched (asyncio and timing examples need
+   them), and so is `datetime.now()` (replacing the datetime classes breaks pickling and pandas;
+   settle handles its dates). Set CVIZ_REAL_RUN=1
    to turn this off for a run.
 2. *Settle.* Some values cannot be made repeatable: what a benchmark measures, C stack addresses
    (the kernel randomizes them in a container), library handles, file dates in `ls -l`. After a

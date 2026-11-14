@@ -7,10 +7,12 @@ What it does, unless CVIZ_REAL_RUN=1 is set:
     the same values on every run. PYTHONHASHSEED=0 (set by the driver) already fixes set order.
   * numpy: when numpy is imported, numpy.random.seed(CVIZ_SEED) runs right after it (an import hook),
     and so does the legacy global generator; np.random.default_rng() without a seed is not affected.
-  * the wall clock: time.time(), time.time_ns(), datetime.datetime.now()/utcnow()/today() and
-    datetime.date.today() start at CVIZ_EPOCH (default 2026-01-05 09:00:00 UTC, a Monday) when the
-    program starts and then advance at the real rate, so dates and times print the same and
-    elapsed times stay real. time.monotonic() and time.perf_counter() are left alone (asyncio and
+  * the wall clock: time.time() and time.time_ns() start at CVIZ_EPOCH (default 2026-01-05 09:00:00
+    UTC, a Monday) when the program starts and then advance at the real rate, so timestamps print
+    the same and elapsed times stay real. datetime.datetime.now() and date.today() are not changed:
+    they read the system clock directly, and replacing the datetime classes breaks pickling, copy and
+    pandas; dates they print differ between runs only in numbers and month or day names, which
+    code-viz's settle step treats as run-to-run values. time.monotonic() and time.perf_counter() are left alone (asyncio and
     timing examples depend on them); what they measure still varies a little from run to run, and
     code-viz's settle step keeps the committed trace when only such numbers differ (section 6).
 """
@@ -33,28 +35,6 @@ if os.environ.get("CVIZ_REAL_RUN") != "1":
     import random as _random
     _random.seed(_seed)
 
-    import datetime as _dt
-
-    class _DateTime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return _dt.datetime.fromtimestamp(_now(), tz) if tz else _dt.datetime.fromtimestamp(_now())
-
-        @classmethod
-        def utcnow(cls):
-            return _dt.datetime.fromtimestamp(_now(), _dt.timezone.utc).replace(tzinfo=None)
-
-        @classmethod
-        def today(cls):
-            return cls.now()
-
-    class _Date(_dt.date):
-        @classmethod
-        def today(cls):
-            return _dt.date.fromtimestamp(_now())
-
-    _dt.datetime = _DateTime
-    _dt.date = _Date
 
     class _SeedNumpy:
         """Import hook: seed numpy's legacy global generator right after numpy is imported."""
