@@ -7,7 +7,9 @@ timeout, and writes /work/out/<id>.json. The container runs with no network (exc
 runner, which can reach Ollama only), capped CPU, memory and process count, and is removed after.
 
 Job fields: id, viz (env, lambda, c, bison, automaton, agent, cast, plain), lang, file (relative to
-/work/src), input (optional stdin or automaton/bison input), timeout (seconds), max_steps.
+/work/src), input (optional stdin or automaton/bison input), timeout (seconds), max_steps; for
+interp= examples also interp_dir (the interpreter's .py files), interp_page, interp_files, entry, and
+the trace gets {"interp": {"page", "files", "entry", "source"}}.
 
 PIPELINE
   code-viz (run, build, label --try, serve) groups examples by runner, writes /work/jobs.json and
@@ -31,7 +33,8 @@ LIMITS AND KNOWN PROBLEMS
   - Each job has its own timeout (default 15 s; the container's total is the sum plus 60 s).
   - Step traces stop at max_steps (default 800) and set truncated; long loops and deep
     recursion (Y vs Z in CS374) end there, so the viewer shows the first 800 steps only.
-  - Mini-language examples have no interpreter in the repo, so they are not runnable.
+  - Mini examples with interp= run the page's Python interpreter (job interp_dir, entry) on
+    program.mini; without it, files/examples/mininote is built with make when present.
   - Haskell and OCaml run as plain programs only; no examples in CS357 or CS374 qualified yet.
 
 setup= (job["setup"], a file of the setup blocks' code): passed to pytrace and agentrec as --setup,
@@ -89,6 +92,15 @@ def plain(job):
         if b.returncode != 0:
             raise RuntimeError("compile failed: " + b.stderr[-600:])
         r = sh([exe], to, d, inp)
+    elif lang == "mini" and job.get("interp_dir"):
+        # interp=: the page's own Python interpreter reads this program as its input file
+        work = tempfile.mkdtemp()
+        idir = os.path.join(SRC, job["interp_dir"])
+        for x in os.listdir(idir):
+            shutil.copy(os.path.join(idir, x), work)
+        shutil.copy(path, os.path.join(work, "program.mini"))
+        cmd = [sys.executable] + [w.replace("{file}", "program.mini") for w in job.get("entry", "runner.py --file {file}").split()]
+        r = sh(cmd, to, work, inp)
     elif lang == "mini":
         work = tempfile.mkdtemp()
         mdir = os.path.join(SRC, job.get("interpreter", "mini"))
@@ -145,6 +157,12 @@ SETUP_WRAP = (  # plain Python with setup=: run the setup silently, then the pro
 def one(job):
     """Run one job and add, when the label has setup=, the setup's ids and code to the trace."""
     t = _one(job)
+    if job.get("interp_dir") and isinstance(t, dict):
+        # shown collapsed above the program: the interpreter that ran it, file by file
+        idir = os.path.join(SRC, job["interp_dir"])
+        t["interp"] = {"page": job.get("interp_page", ""), "files": job.get("interp_files", []), "entry": job.get("entry", ""),
+                       "source": "\n".join(f"# ===== {f} =====\n" + open(os.path.join(idir, f), encoding="utf-8").read()
+                                           for f in job.get("interp_files", []))}
     if job.get("setup") and isinstance(t, dict):
         t["setup"] = {"ids": job.get("setup_ids", []),
                       "source": open(os.path.join(SRC, job["setup"]), encoding="utf-8").read()}

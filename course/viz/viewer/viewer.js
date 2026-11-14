@@ -142,10 +142,16 @@
 
   // setup= examples: the earlier cells' code runs first, untraced; shown collapsed above the code
   function showSetup(t) {
-    const su = t && t.setup;
-    $("setupbox").hidden = !su;
-    if (!su) return;
+    const su = t && t.setup, it = t && t.interp;
+    $("setupbox").hidden = !(su || it);
+    if (!(su || it)) return;
     $("setupbox").open = false;
+    if (it) {
+      // interp=: the Python interpreter (from the page that builds it) read this program as input
+      $("setupsum").textContent = `Run by the Python interpreter built on ${it.page || "this page"}: ${(it.files || []).join(", ")} (python ${(it.entry || "").replace("{file}", "program.mini")})`;
+      $("setupcode").textContent = it.source || "";
+      return;
+    }
     $("setupsum").textContent = `Setup code from ${(su.ids || []).join(", ") || "earlier cells"} (runs first, not stepped)`;
     $("setupcode").textContent = su.source || "";
   }

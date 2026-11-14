@@ -95,6 +95,8 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `timeout=N` | seconds for this example (default 20; agents 300) |
 | `max_steps=N` | step cap for this example (default 800) |
 | `setup=ID[,ID]` | Python only: run these earlier blocks' code first, untraced and silent (below) |
+| `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
+| `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
@@ -122,6 +124,33 @@ without being stepped. The viewer and student mode show the setup code collapsed
 ("Setup code from ... (runs first, not stepped)"), and Edit and run re-runs the edited cell after the
 same setup. For agent examples the setup's model calls are not recorded. A setup id must be a labeled
 block; `catalog` and `label` work these out (section 5).
+
+**Interpreter examples (`interp=`).** CS374's project guide (`tutorial-project-language-guide.md`)
+builds an interpreter for the Mini language in Python, one module at a time, and its Mini example
+programs need that interpreter to run. A Mini block labeled `interp=page` runs as Python: code-viz
+gathers every Python block on the page whose first line is `# name.py` (a new file) or
+`# name.py (continued)` (appended to it), in page order, writes those files, saves the Mini block as
+`program.mini`, and runs `python runner.py --file program.mini` in the mini runner. So the example
+is the input the guide's interpreter reads and runs, and its output is what that interpreter prints:
+
+    <!-- run: id=cs374-tutorial-project-language-guide-2 viz=plain interp=page -->
+    ```mini
+    fun fib(n) { ... }
+    print fib(10);
+    ```
+
+Python blocks without a `# name.py` heading (demos, "try it" cells) and `test_*.py` files are left
+out. Every module block must carry its heading, `(continued)` included, even when it continues a
+class; a block that forgets it silently drops out of the interpreter (the parser's 5.2 to 5.4 blocks
+were missing theirs until 2026-11-14). The viewer shows the interpreter's files collapsed above the
+program ("Run by the Python interpreter built on ..."). `label` suggests `interp=page` for Mini blocks
+on a page that has `# name.py` blocks, and `label --try` keeps only the blocks the interpreter runs
+cleanly, so a Mini example that the guide's interpreter cannot parse stays unlabeled and shows up in
+the `label --try` count (CS374 Example 4, `if` as an expression with `{ "adult" }`, is one: the
+guide's parser wants `;` after `"adult"`). Without `interp=`, a Mini block still uses
+`files/examples/mininote` (built with make) when the course has it. To use another command line, set
+`entry="mini.py {file}"`. Student mode's Edit and run does not re-run interpreter examples (they need
+the runner), so it shows the recorded run.
 
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`
@@ -284,7 +313,7 @@ address (its output looks changed on every build; see the tips in section 13).
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once and replayed |
 | cast | shell | a terminal replay of each command and its output |
-| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace) |
+| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
 
 ## 8. Reading the viewer
 
@@ -449,6 +478,7 @@ One JSON file per example, `viz/traces/<id>.json` (published gzipped as `.json.g
   "stdout": "the whole output", "error": null or "message", "truncated": false,
   "page": "_pages/...md", "line": 123, "viz": "...", "lang": "...",
   "setup": {"ids": [...], "source": "the setup code"}     only with setup=
+  "interp": {"page", "files": [...], "entry", "source"}       only with interp= (the interpreter that ran it)
 }
 ```
 
@@ -520,7 +550,9 @@ published by the course's normal Pages build.
 - Step traces stop at 800 steps (lambda: 200) and are marked truncated.
 - Model output varies, so agent outputs are never compared; outputs with timestamps always look
   changed.
-- The 8 CS374 Mini-language blocks have no interpreter in the repo; Haskell and OCaml run whole (no
+- Of CS374's 8 Mini blocks, 6 run through the project guide's Python interpreter (`interp=page`);
+  Example 4 needs a parser change (`{ "adult" }` without `;`) and Exercise 7.2 prints nothing, so
+  both stay unlabeled. Haskell and OCaml run whole (no
   steps) and none qualified yet; `cs374-tutorial-c-for-flex-bison-1` gives no gdb steps.
 - Large bison state graphs lay out slowly on phones.
 - The Python tracer keeps every object and frame it has drawn alive until the run ends (so their

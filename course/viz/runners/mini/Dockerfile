@@ -1,6 +1,7 @@
 # code-viz runner "mini" (runners/mini/Dockerfile).
 # Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
-# For the CS374 Mini language. The repo has no Mini interpreter, so these examples are not runnable yet.
+# For the CS374 Mini language: interp= examples run the project guide's own Python interpreter here
+# (python:3.12, no extra packages); flex, bison and gcc build files/examples/mininote for the others.
 #
 # How it is used: code-viz builds this image as code-viz-mini:<hash of this file> the first time an
 # example needs it (docker build --network host: downloads time out on minipc's default bridge),

@@ -94,6 +94,8 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `timeout=N` | seconds for this example (default 20; agents 300) |
 | `max_steps=N` | step cap for this example (default 800) |
 | `setup=ID[,ID]` | Python only: run these earlier blocks' code first, untraced and silent (below) |
+| `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
+| `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
@@ -121,6 +123,33 @@ without being stepped. The viewer and student mode show the setup code collapsed
 ("Setup code from ... (runs first, not stepped)"), and Edit and run re-runs the edited cell after the
 same setup. For agent examples the setup's model calls are not recorded. A setup id must be a labeled
 block; `catalog` and `label` work these out (section 5).
+
+**Interpreter examples (`interp=`).** CS374's project guide (`tutorial-project-language-guide.md`)
+builds an interpreter for the Mini language in Python, one module at a time, and its Mini example
+programs need that interpreter to run. A Mini block labeled `interp=page` runs as Python: code-viz
+gathers every Python block on the page whose first line is `# name.py` (a new file) or
+`# name.py (continued)` (appended to it), in page order, writes those files, saves the Mini block as
+`program.mini`, and runs `python runner.py --file program.mini` in the mini runner. So the example
+is the input the guide's interpreter reads and runs, and its output is what that interpreter prints:
+
+    <!-- run: id=cs374-tutorial-project-language-guide-2 viz=plain interp=page -->
+    ```mini
+    fun fib(n) { ... }
+    print fib(10);
+    ```
+
+Python blocks without a `# name.py` heading (demos, "try it" cells) and `test_*.py` files are left
+out. Every module block must carry its heading, `(continued)` included, even when it continues a
+class; a block that forgets it silently drops out of the interpreter (the parser's 5.2 to 5.4 blocks
+were missing theirs until 2026-11-14). The viewer shows the interpreter's files collapsed above the
+program ("Run by the Python interpreter built on ..."). `label` suggests `interp=page` for Mini blocks
+on a page that has `# name.py` blocks, and `label --try` keeps only the blocks the interpreter runs
+cleanly, so a Mini example that the guide's interpreter cannot parse stays unlabeled and shows up in
+the `label --try` count (CS374 Example 4, `if` as an expression with `{ "adult" }`, is one: the
+guide's parser wants `;` after `"adult"`). Without `interp=`, a Mini block still uses
+`files/examples/mininote` (built with make) when the course has it. To use another command line, set
+`entry="mini.py {file}"`. Student mode's Edit and run does not re-run interpreter examples (they need
+the runner), so it shows the recorded run.
 
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`
@@ -283,7 +312,7 @@ address (its output looks changed on every build; see the tips in section 13).
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once and replayed |
 | cast | shell | a terminal replay of each command and its output |
-| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace) |
+| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
 
 ## 8. Reading the viewer
 
@@ -448,6 +477,7 @@ One JSON file per example, `viz/traces/<id>.json` (published gzipped as `.json.g
   "stdout": "the whole output", "error": null or "message", "truncated": false,
   "page": "_pages/...md", "line": 123, "viz": "...", "lang": "...",
   "setup": {"ids": [...], "source": "the setup code"}     only with setup=
+  "interp": {"page", "files": [...], "entry", "source"}       only with interp= (the interpreter that ran it)
 }
 ```
 
@@ -519,7 +549,9 @@ published by the course's normal Pages build.
 - Step traces stop at 800 steps (lambda: 200) and are marked truncated.
 - Model output varies, so agent outputs are never compared; outputs with timestamps always look
   changed.
-- The 8 CS374 Mini-language blocks have no interpreter in the repo; Haskell and OCaml run whole (no
+- Of CS374's 8 Mini blocks, 6 run through the project guide's Python interpreter (`interp=page`);
+  Example 4 needs a parser change (`{ "adult" }` without `;`) and Exercise 7.2 prints nothing, so
+  both stay unlabeled. Haskell and OCaml run whole (no
   steps) and none qualified yet; `cs374-tutorial-c-for-flex-bison-1` gives no gdb steps.
 - Large bison state graphs lay out slowly on phones.
 - The Python tracer keeps every object and frame it has drawn alive until the run ends (so their
@@ -759,6 +791,31 @@ def block_lookup(root):
     return _LOOKUP[root]
 
 
+MODULE_HEAD = re.compile(r"^#\s*([A-Za-z_][\w]*\.py)(\s*\(continued\))?\s*$")
+
+
+def interp_files(root, page):
+    """interp=: the Python interpreter a page builds, as {file name: code}, in page order.
+
+    A Python block whose first line is `# name.py` starts that file; `# name.py (continued)` appends
+    to it. Blocks without such a heading (demos, tests) are not part of the interpreter."""
+    files = {}
+    for b in blocks(root, page)[0]:
+        if b["lang"] != "python":
+            continue
+        first = b["code"].lstrip("\n").split("\n", 1)[0].strip()
+        m = MODULE_HEAD.match(first)
+        if m and not m.group(1).startswith("test_"):
+            files.setdefault(m.group(1), []).append(b["code"])
+    return {f: "\n\n".join(parts) + "\n" for f, parts in files.items()}
+
+
+def interp_page(lab, b):
+    """The page interp= names: `page` (or a bare `interp`) is the example's own page."""
+    v = lab.get("interp")
+    return b["page"] if v in (True, "page") else v
+
+
 def suggest(b):
     """A suggested label for an unlabeled block, or None when it is not a runnable example."""
     code, lang = b["code"], b["lang"]
@@ -944,7 +1001,21 @@ def job_for(b, root, src_dir, lookup=None):
         open(os.path.join(src_dir, sfile), "w", encoding="utf-8").write("\n\n".join(x["code"] for x in chain) + "\n")
         job["setup"] = sfile
         job["setup_ids"] = [x["label"]["id"] for x in chain]
-    if lang == "mini":
+    if lang == "mini" and lab.get("interp"):
+        # interp=: run the Python interpreter the page builds, with this program as its input file
+        ipage = interp_page(lab, b)
+        files = interp_files(root, ipage)
+        if not files:
+            raise ValueError(f"{lab['id']}: interp={lab['interp']}: no `# name.py` Python blocks on {ipage}")
+        idir = f"{lab['id']}/interp"
+        os.makedirs(os.path.join(src_dir, idir), exist_ok=True)
+        for f, code in files.items():
+            open(os.path.join(src_dir, idir, f), "w", encoding="utf-8").write(code)
+        job["interp_dir"] = idir
+        job["interp_page"] = ipage
+        job["interp_files"] = list(files)
+        job["entry"] = lab.get("entry") or "runner.py --file {file}"
+    elif lang == "mini":
         mini = os.path.join(root, "files/examples/mininote")
         if os.path.isdir(mini):
             shutil.copytree(mini, os.path.join(src_dir, "mini"), dirs_exist_ok=True)
@@ -1079,6 +1150,7 @@ def cmd_label(a):
     info = site_info(root)
     docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network) if a.try_run else None
     total = 0
+    mini_interp = {}      # page -> does it build a Python Mini interpreter (interp=page)
     try:
         for page in pages(root, a.page):
             bs, lines = blocks(root, page)
@@ -1101,6 +1173,11 @@ def cmd_label(a):
                         if any(not d["label"] for d in deps):
                             continue  # needs an unlabeled block; label that one first
                         s = dict(s, setup=",".join(d["label"]["id"] for d in deps))
+                if s and s["lang"] == "mini":
+                    if page not in mini_interp:
+                        mini_interp[page] = bool(interp_files(root, page))
+                    if mini_interp[page]:
+                        s = dict(s, interp="page")
                 if not s or (a.lang and s["lang"] != a.lang) or (a.viz and s["viz"] != a.viz):
                     continue
                 if (s["viz"] == "agent") != bool(a.agents):
@@ -1137,6 +1214,7 @@ def cmd_label(a):
                 lab = b["label"]
                 fields = " ".join([f"id={lab['id']}", f"viz={lab['viz']}"] + ([f"lang={lab['lang']}"] if lab["lang"] != b["lang"] else [])
                                   + ([f"setup={lab['setup']}"] if lab.get("setup") else [])
+                                  + ([f"interp={lab['interp']}"] if lab.get("interp") else [])
                                   + (["record"] if lab.get("record") else []))
                 if a.links:
                     end = b["end"]
