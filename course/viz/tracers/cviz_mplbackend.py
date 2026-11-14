@@ -43,7 +43,13 @@ def save_figure(fig):
     """Write one figure as the next fig-NN.png in CVIZ_FIGS (also used by the turtle and ezgraphics
     stand-ins). Returns the path, or None when figures are not being collected or the cap is reached."""
     d = os.environ.get("CVIZ_FIGS")
-    if not d or _count[0] >= int(os.environ.get("CVIZ_FIG_MAX", "8")):
+    if not d:
+        return None
+    if _count[0] >= int(os.environ.get("CVIZ_FIG_MAX", "8")):
+        os.makedirs(d, exist_ok=True)       # over the cap: counted in dropped.txt (figures_dropped)
+        p = os.path.join(d, "dropped.txt")
+        n = int(open(p).read() or 0) if os.path.exists(p) else 0
+        open(p, "w").write(str(n + 1))
         return None
     os.makedirs(d, exist_ok=True)
     dpi = float(os.environ.get("CVIZ_FIG_DPI", "72"))

@@ -8,7 +8,8 @@ A notebook cannot carry `<!-- run: -->` labels, so its examples are listed in vi
                     "examples": [{"id": "cs477-nb-regression-4", "cell": 4, "viz": "plain"}]}]}
 
 `cell` counts code cells only, from 1, in notebook order (markdown cells are not counted), so the id
-stays the same when prose cells change. An example runs like a setup= cell: every earlier code cell
+stays the same when prose cells change. A page links the notebook when the file name appears on a
+boundary; unlabel() removes ids and rewrites the page's link line for the remaining examples. An example runs like a setup= cell: every earlier code cell
 of the notebook runs first, untraced and silent, then the cell itself is traced (viz=env) or run
 for its output and figures (viz=plain). IPython-only lines (`%magic`, `!shell`) become comments.
 Cells that mount Google Drive work because tracers/pystubs has a google.colab stand-in whose
@@ -26,6 +27,7 @@ stay inside a list item, and never inside a table), so the page renders as befor
 import json
 import os
 import re
+import sys
 
 INDEX = os.path.join("viz", "notebooks.json")
 
@@ -115,8 +117,10 @@ def suggest(code):
     if heavy:
         return None
     lines = [l for l in code.splitlines() if l.strip() and not l.lstrip().startswith("#")]
-    if prints and not draws and len(lines) <= 25 and not re.search(r"^\s*(import|from)\s", code, re.M):
-        return "env"
+    mods = set(re.findall(r"^\s*(?:import|from)\s+([A-Za-z_]\w*)", code, re.M))
+    std = set(getattr(sys, "stdlib_module_names", ()))
+    if prints and not draws and len(lines) <= 25 and mods <= std:
+        return "env"      # short, prints, only standard-library imports: step through it
     return "plain"
 
 
@@ -159,7 +163,8 @@ def add_links(root, info, pages, link_mark, check=False):
             if any(link_mark in l and f"/viz/#{ids[0]})" in l for l in lines):
                 hit = "linked"
                 break
-            refs = [k for k, l in enumerate(lines) if name in l and link_mark not in l and not l.lstrip().startswith("<!--")]
+            pat = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])")   # test.ipynb, not my_test.ipynb
+            refs = [k for k, l in enumerate(lines) if pat.search(l) and link_mark not in l and not l.lstrip().startswith("<!--")]
             if refs and hit is None:
                 hit = (page, lines, refs[0])
         if hit == "linked":
@@ -181,8 +186,26 @@ def add_links(root, info, pages, link_mark, check=False):
     return missing
 
 
-def unlabel(root, gone):
+def unlabel(root, gone, info=None, pages=(), link_mark=None):
+    """Drop the ids from viz/notebooks.json, remove page link lines that name any of them, and (with
+    info) write the link again for the notebook's remaining examples."""
     idx = load_index(root)
+    hit = False
     for n in idx.get("notebooks", []):
+        before = len(n.get("examples", []))
         n["examples"] = [e for e in n.get("examples", []) if e["id"] not in gone]
+        hit = hit or len(n["examples"]) != before
     save_index(root, idx)
+    if not (hit and link_mark):
+        return
+    for page in pages:
+        path = os.path.join(root, page)
+        lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
+        keep = [l for l in lines if not (link_mark in l and "Visualize this notebook's examples" in l
+                                         and any(f"/viz/#{g})" in l for g in gone))]
+        if len(keep) != len(lines):
+            crlf = b"\r\n" in open(path, "rb").read()
+            with open(path, "w", encoding="utf-8", newline="\r\n" if crlf else "\n") as f:
+                f.write("\n".join(keep))
+    if info:
+        add_links(root, info, pages, link_mark)

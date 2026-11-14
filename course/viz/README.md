@@ -103,7 +103,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
 | `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
-| `runner=NAME` | run in `runners/NAME` instead of the language's runner (`python-ml` for PyTorch; `label` adds it) |
+| `runner=NAME` | run in `runners/NAME` instead of the language's runner (`python-ml` for PyTorch; `label` adds it); a plain name of letters, digits, `_` and `-` |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
 page's file name lowercased with other characters turned into hyphens (`liascript-scope-chains`),
@@ -162,8 +162,9 @@ the runner), so it shows the recorded run.
 **Pages.** Every Markdown page under `_pages/` is read: Activities, Tutorials, Labs, Modules,
 Assignments, Projects and notes pages, but never a submodule listed in `.gitmodules` (such as
 `_pages/Exercises`, which belongs to Ursinus-Exercises). Fences may start at column 0 or be indented
-up to 12 spaces, as a code block inside a list item is; the label and the link line are written with
-the same indent, so they stay inside the list item. Ids are unique across the site: two pages with
+up to 12 spaces, as a code block inside a list item is (its closing fence may be indented up to
+three spaces more or less than the opening one); the label and the link line are written with the
+same indent, so they stay inside the list item. Ids are unique across the site: two pages with
 the same file name in different folders get different numbers. Pages are written back with the line
 ending they had (many course pages use CRLF), and a page is only written when a label or link was
 added, so a `label` run that keeps nothing leaves the page byte for byte unchanged.
@@ -197,7 +198,9 @@ on any page:
     [Visualize this notebook's examples](<site>/viz/#<first id>): [cell 2](<site>/viz/#<id>) [cell 3](...) <!-- code-viz link -->
 
 The viewer shows the earlier cells collapsed above the cell ("Setup code from code cells 1 to 3 of
-...").
+..."). A page links the notebook when its file name appears on a boundary (`test.ipynb` does not
+match `my_test.ipynb`). `unlabel <id>` removes a notebook example from `viz/notebooks.json`, deletes
+the page's link line that named it, and writes the line again for the notebook's remaining examples.
 
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`

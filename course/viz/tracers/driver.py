@@ -173,6 +173,9 @@ def add_figures(t, d):
             continue
         total += len(data)
         figs.append({"png": base64.b64encode(data).decode(), "at": at})
+    capped = os.path.join(d, "dropped.txt")
+    if os.path.exists(capped):
+        dropped += int(open(capped).read() or 0)   # figures past cviz_mplbackend's count cap
     if figs:
         t["figures"] = figs
     if dropped:
