@@ -155,9 +155,42 @@ SETUP_WRAP = (  # plain Python with setup=: run the setup silently, then the pro
     "runpy.run_path(sys.argv[0], init_globals=g, run_name='__main__')\n")
 
 
+FIG_BYTES = 600_000  # figures kept per example (base64 PNGs); later ones are dropped and counted
+
+
+def add_figures(t, d):
+    """Figures the example drew (cviz_mplbackend, the turtle and ezgraphics stand-ins): fig-NN.png
+    files in d become t["figures"] = [{"png": base64, "at": output offset}], in order."""
+    import base64
+    names = sorted(f for f in os.listdir(d) if f.endswith(".png")) if os.path.isdir(d) else []
+    figs, total, dropped = [], 0, 0
+    for f in names:
+        data = open(os.path.join(d, f), "rb").read()
+        meta = os.path.join(d, f[:-4] + ".json")
+        at = json.load(open(meta)).get("at", 0) if os.path.exists(meta) else 0
+        if total + len(data) > FIG_BYTES:
+            dropped += 1
+            continue
+        total += len(data)
+        figs.append({"png": base64.b64encode(data).decode(), "at": at})
+    if figs:
+        t["figures"] = figs
+    if dropped:
+        t["figures_dropped"] = dropped
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def one(job):
-    """Run one job and add, when the label has setup=, the setup's ids and code to the trace."""
-    t = _one(job)
+    """Run one job and add, when the label has setup=, the setup's ids and code to the trace; and the
+    figures it drew (section 7, Figures)."""
+    figdir = tempfile.mkdtemp(prefix="cviz-figs-")
+    os.environ["CVIZ_FIGS"] = figdir
+    try:
+        t = _one(job)
+    finally:
+        os.environ.pop("CVIZ_FIGS", None)
+    if isinstance(t, dict):
+        add_figures(t, figdir)
     if job.get("interp_dir") and isinstance(t, dict):
         # shown collapsed above the program: the interpreter that ran it, file by file
         idir = os.path.join(SRC, job["interp_dir"])
@@ -201,6 +234,10 @@ def _one(job):
 
 
 def main():
+    # Python examples draw headlessly: matplotlib through cviz_mplbackend, and `import turtle` /
+    # `import ezgraphics` load the stand-ins in tracers/pystubs (section 7, Figures).
+    os.environ["MPLBACKEND"] = "module://cviz_mplbackend"
+    os.environ["PYTHONPATH"] = os.pathsep.join([T, os.path.join(T, "pystubs")] + [x for x in [os.environ.get("PYTHONPATH")] if x])
     jobs = json.load(open("/work/jobs.json"))
     os.makedirs(OUT, exist_ok=True)
     for job in jobs:

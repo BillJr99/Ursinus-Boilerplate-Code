@@ -32,13 +32,16 @@ its `code/` submodule, so a course runs it as `code/course/viz/code-viz` from th
 ```
 course/viz/
   code-viz        the command (this file): catalog, label, unlabel, run, build, serve, qr, readme
-  runners/        one Dockerfile per toolchain: python, scheme, c, flexbison, mini, haskell,
-                  prolog, ocaml, agents, shell, qr
+  runners/        one Dockerfile per toolchain: python, python-ml (PyTorch, CPU), scheme, c,
+                  flexbison, mini, haskell, prolog, ocaml, agents, shell, qr
   tracers/        step tracers that run inside the containers: driver.py (dispatch), pytrace.py,
                   schemetrace.py, lambdatrace.py, cstep_gdb.py, bisontrace.py, automaton.py,
                   agentrec.py, shellcast.py, cviz-repl.scm. pytrace, schemetrace, lambdatrace and
                   automaton are pure Python, so the viewer also runs them in the browser (Pyodide).
-  viewer/         the static viewer: index.html, viewer.js, viewer.css
+                  cviz_mplbackend.py draws figures headlessly, and pystubs/ holds the turtle,
+                  ezgraphics and google.colab stand-ins (section 7, Figures).
+  notebooks.py    Jupyter notebooks under files/ as a source of examples (section 4, Notebooks)
+  viewer/         the static viewer: index.html, viewer.js, viewer.css, figures.js (figures)
   screenshot.py   headless-browser screenshots and render checks of a built viewer
   workflow.yml    the GitHub Actions template for course repos ("code-viz check")
   README.md       generated from this header by `code-viz readme --write`
@@ -46,9 +49,11 @@ course/viz/
 
 The pipeline, left to right:
 
-1. **Catalog.** `code-viz catalog` scans `_pages/**/*.md` for fenced blocks at column 0. A block is
-   an example when a label comment sits on the line above its fence (section 4). Files that are not
-   blocks (bison grammars, `.dot` automata) come from `viz/manifest.json`.
+1. **Catalog.** `code-viz catalog` scans every page under `_pages/` (except submodules such as
+   `_pages/Exercises`) for fenced blocks, at column 0 or indented inside a list item. A block is an
+   example when a label comment sits on the line above its fence (section 4). Files that are not
+   blocks come from `viz/manifest.json` (bison grammars, `.dot` automata) and `viz/notebooks.json`
+   (notebook cells).
 2. **Runners.** Each example's language picks a runner image, built from `runners/<name>/Dockerfile`
    with `docker build --network host` and labelled `code-viz=1`.
 3. **Tracers.** One container per batch runs `tracers/driver.py`, which runs each job with the right
@@ -97,6 +102,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
 | `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
+| `runner=NAME` | run in `runners/NAME` instead of the language's runner (`python-ml` for PyTorch; `label` adds it) |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
 page's file name lowercased with other characters turned into hyphens (`liascript-scope-chains`),
@@ -152,6 +158,46 @@ gets its value). Without `interp=`, a Mini block still uses
 `entry="mini.py {file}"`. Student mode's Edit and run does not re-run interpreter examples (they need
 the runner), so it shows the recorded run.
 
+**Pages.** Every Markdown page under `_pages/` is read: Activities, Tutorials, Labs, Modules,
+Assignments, Projects and notes pages, but never a submodule listed in `.gitmodules` (such as
+`_pages/Exercises`, which belongs to Ursinus-Exercises). Fences may start at column 0 or be indented
+up to 12 spaces, as a code block inside a list item is; the label and the link line are written with
+the same indent, so they stay inside the list item. Ids are unique across the site: two pages with
+the same file name in different folders get different numbers. Pages are written back with the line
+ending they had (many course pages use CRLF), and a page is only written when a label or link was
+added, so a `label` run that keeps nothing leaves the page byte for byte unchanged.
+
+**Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
+a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
+is a page to fix, not an example).
+
+**Site address.** Links and QR codes use `<url>/<repo name>` when the site is on GitHub Pages: the
+repo name comes from the git remote, because a parent repo's `_config.yml` often keeps the
+`baseurl` of the term it was copied from. In a repo without a remote, `_config.yml`'s `url` and
+`baseurl` are used. A repo name without a course number (Ursinus-WebMobile) gives ids starting with
+the name (`webmobile-...`).
+
+**Notebooks.** Jupyter notebooks under `files/` are a source of examples. A notebook cannot carry
+labels, so its examples are listed in `viz/notebooks.json`:
+
+    {"notebooks": [{"file": "files/notebooks/ab_test_analysis.ipynb",
+                    "examples": [{"id": "cs474-nb-ab-test-analysis-2", "cell": 2, "viz": "env"}]}]}
+
+`cell` counts code cells only, from 1. An example runs like a `setup=` cell: every earlier code cell
+of the notebook runs first, untraced and silent, then the cell is traced (`viz=env`, for a short
+standard-library cell that prints) or run for its output and figures (`viz=plain`). IPython-only
+lines (`%matplotlib inline`, `!pip install`) become comments. `google.colab` is a stand-in whose
+`drive.mount()` does nothing, so a Colab notebook's setup runs; a cell that then reads Drive files
+fails and is not labeled. Cells that import TensorFlow, Keras, PyTorch or transformers are not
+suggested. `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
+and adds one line under the paragraph, list item or table that holds the first link to the notebook
+on any page:
+
+    [Visualize this notebook's examples](<site>/viz/#<first id>): [cell 2](<site>/viz/#<id>) [cell 3](...) <!-- code-viz link -->
+
+The viewer shows the earlier cells collapsed above the cell ("Setup code from code cells 1 to 3 of
+...").
+
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`
 generates it from `files/` the first time; edit it afterwards to choose inputs.
@@ -182,7 +228,7 @@ code-viz catalog -v                     # also list every suggestion with its pa
 ```
 
 `catalog` writes `viz/catalog.json` (every labeled example and suggestion) only when run without
-`--page`, so a one-page look never shrinks it.
+`--page` and only in a repo that already has labels or a `viz/` folder, so a one-page look never shrinks it.
 
 ### label
 
@@ -197,7 +243,12 @@ chains.
 code-viz label --try --links
 code-viz label --try --links --lang scheme --page _pages/Activities/liascript-scheme.md
 code-viz label --agents --try --ollama-network cviz-ollama
+code-viz label --notebooks --try --links     # notebook cells (section 4, Notebooks)
 ```
+
+`--notebooks` labels notebook cells instead of page blocks (`--page` then names one notebook, and
+`--viz` limits the kind). `label --try` counts a run as good when it printed, stepped, or drew a
+figure.
 
 ### links
 
@@ -331,7 +382,23 @@ address (its output looks changed on every build; see the tips in section 13).
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once and replayed |
 | cast | shell | a terminal replay of each command and its output |
-| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
+| plain | Haskell, Prolog, OCaml, Mini, Python that draws | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
+
+**Figures.** Every Python example runs with matplotlib's backend set to `tracers/cviz_mplbackend.py`,
+so each figure the program shows (`plt.show()`) or leaves open at exit is saved as a PNG and kept in
+the trace (`figures`), shown under the Output panel. In a stepped trace (env) a figure appears once
+the printed output reaches the point where the program showed it; in plain traces all figures show.
+`import turtle` and `import ezgraphics` load headless stand-ins from `tracers/pystubs`: the turtle
+stand-in records the drawing and saves it at `done()` or exit; the ezgraphics stand-in records each
+`GraphicsWindow` canvas (setFill, setOutline, drawRect/drawRectangle, drawOval, drawLine,
+drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
+growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
+example fails visibly and is not labeled. Figures are deterministic (72 dpi, at most 900 pixels wide,
+no metadata), at most 8 per example and 600 KB in all (more are counted as `figures_dropped`). Click
+a figure to open it full size. `label` suggests `viz=plain` for Python that uses matplotlib,
+seaborn, turtle or ezgraphics (stepping through it would draw Figure objects), and `runner=python-ml`
+with `timeout=120` for PyTorch. Edit and run in the browser does not capture figures; the recorded
+figures stay on screen.
 
 ## 8. Reading the viewer
 
@@ -495,7 +562,8 @@ One JSON file per example, `viz/traces/<id>.json` (published gzipped as `.json.g
   "steps": [ ... ],            kind-specific, below
   "stdout": "the whole output", "error": null or "message", "truncated": false,
   "page": "_pages/...md", "line": 123, "viz": "...", "lang": "...",
-  "setup": {"ids": [...], "source": "the setup code"}     only with setup=
+  "setup": {"ids": [...], "source": "the setup code"}     only with setup= (and notebook cells)
+  "figures": [{"png": "base64", "at": 123}], "figures_dropped": 2     only when the example drew
   "interp": {"page", "files": [...], "entry", "source"}       only with interp= (the interpreter that ran it)
 }
 ```
@@ -562,7 +630,7 @@ workflow token starts no other workflow; it only does so when the repo has `code
 **What it does** (on the branch that started it):
 
 1. Stops at once, changing nothing, when the repo has no code-viz labels (`<!-- run: ... -->` in
-   `_pages/`) and no `viz/index.json` or `viz/manifest.json`. A course that has not started using
+   `_pages/`) and no `viz/index.json`, `viz/manifest.json` or `viz/notebooks.json`. A course that has not started using
    code-viz therefore gets no `viz/` folder and no commits; `code-viz build` itself also writes
    nothing in that case.
 2. Clones Ursinus-Boilerplate-Code into the runner's temporary folder, outside the repo, at the
@@ -616,6 +684,10 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 | CI fails with "code-viz changed files outside viz/" | a code-viz bug wrote outside `viz/`; nothing was committed. The log lists the files; fix code-viz, then re-run the workflow |
 | CI committed `viz/` but the site did not change | "Deploy GitHub Pages" did not start (the log warns); run it by hand (Actions, Deploy GitHub Pages, Run workflow) |
 | a deck example has no Visualize link | it was labeled without `--links`: `code-viz links`, then commit the page |
+| a drawing example shows no figure | the program never called `plt.show()` and closed its figure, or the ezgraphics window was never drawn on; or the 8-figure / 600 KB cap was reached (`figures_dropped`) |
+| an ezgraphics or turtle example fails with AttributeError | it calls something the headless stand-in does not support (section 7, Figures): add it to `tracers/pystubs/`, or leave the block unlabeled |
+| a notebook cell fails in `label --notebooks --try` | an earlier cell needs data or a service the container does not have (Google Drive files, a GPU, the network); it stays unlabeled |
+| `label` rewrote every line of a page | it cannot now: pages keep their line ending and are only written when something was added; if an old copy did, `git checkout` the page |
 | every build changes an output | the example prints a time or random value (section 13) |
 | a lambda variable B or K acts like a combinator | predefined names; add `-- free: B` or use lowercase |
 | `label --try` refuses a cell that uses an earlier cell's names | label the earlier cell first, then run `label` again (it adds `setup=`), or write `setup=<id>` by hand |
@@ -640,6 +712,11 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 - Live mode is one machine's Docker; it does not scale to a whole class running at once.
 - The CI path filter misses submodule-only changes (section 16).
 - The viewer needs a current browser (DecompressionStream for the gzipped traces).
+- Not labeled on purpose (2026-11-14): CS170's `sounds` examples (they play audio), CS474's AutoGen
+  examples (pieces of an assignment's instructions, configured for OpenAI `gpt-4` with the student's
+  own key; recording them with Ollama would change the code students write), CS377's `pymongo` and
+  `cassandra` examples (they connect to database servers the container does not have), and
+  TensorFlow (too large for the runner).
 
 ## 19. Output files
 
@@ -649,7 +726,8 @@ viz/tracers/                                     the in-browser tracers (Pyodide
 viz/traces/<id>.json.gz                          one trace per example (section 14)
 viz/expected/<id>.out                            the expected output, checked by build --check
 viz/qr/<id>.svg, viz/qr/<id>.png                 QR codes of student links (code-viz qr)
-viz/index.json, viz/catalog.json, viz/manifest.json
+viz/figures.js                                    shows figures (section 7, Figures)
+viz/index.json, viz/catalog.json, viz/manifest.json, viz/notebooks.json
 ```
 
 ## 20. Testing code-viz itself
@@ -683,6 +761,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 TRACERS = os.path.join(HERE, "tracers")
 RUNNERS = os.path.join(HERE, "runners")
 VIEWER = os.path.join(HERE, "viewer")
+sys.path.insert(0, HERE)
+import notebooks as NB  # noqa: E402  Jupyter notebooks under files/ (section 4, Notebooks)
 
 RUNNER_OF = {("env", "python"): "python", ("env", "scheme"): "scheme", ("lambda", "lambda"): "python",
              ("c", "c"): "c", ("c", "cpp"): "c", ("bison", "flexbison"): "flexbison",
@@ -692,10 +772,16 @@ PLAIN_RUNNER = {"haskell": "haskell", "prolog": "prolog", "ocaml": "ocaml", "min
 LANG_ALIASES = {"py": "python", "python3": "python", "scm": "scheme", "racket": "scheme", "lisp": "scheme",
                 "hs": "haskell", "pl": "prolog", "ml": "ocaml", "c++": "cpp", "bash": "shell", "sh": "shell",
                 "console": "shell", "lambda": "lambda"}
-FENCE = re.compile(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+.#-]*)(.*)$")
+FENCE = re.compile(r"^( {0,12})(`{3,}|~{3,})\s*([A-Za-z0-9_+.#-]*)(.*)$")
+HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+# Blocks under a heading like these are never labeled: pages must not print solutions (section 4).
+SOLUTION = re.compile(r"\b(solutions?|answer\s*keys?)\b|^\W*keys?\W*$", re.I)
 LABEL = re.compile(r"^\s*<!--\s*run:(.*?)-->\s*$")
 LINK_MARK = "<!-- code-viz link -->"
 STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"numpy", "pandas", "sklearn", "matplotlib", "requests"}
+GRAPHICS = {"turtle", "ezgraphics"}                 # headless stand-ins in tracers/pystubs (section 7)
+EXTRA = {"scipy", "sqlalchemy", "seaborn", "sqlite3", "google"} | GRAPHICS   # installed in the python runner
+ML = {"torch", "torchvision"}                         # the python-ml runner
 AGENT_HINTS = re.compile(r"ollama|11434|/api/(chat|generate|embed)|chat\.completions|promptfoo", re.I)
 
 
@@ -719,23 +805,56 @@ def site_info(root):
             m = re.match(r"^\s*baseurl\s*:\s*\"?([^\"#\s]*)", line)
             if m:
                 base = m.group(1).rstrip("/")
+    # The site lives at <url>/<repo name> on GitHub Pages. A parent repo's _config.yml often still has
+    # the baseurl of the term it was copied from (Ursinus-CS170 says /Ursinus-CS170-Fall2024), so the
+    # repo name from the git remote wins when there is one; links then open this repo's own viz/.
+    try:
+        origin = subprocess.run(["git", "-C", root, "remote", "get-url", "origin"], capture_output=True,
+                                text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        origin = ""
+    m = re.search(r"github\.com[:/][^/]+/([^/]+?)(?:\.git)?$", origin)
+    if m and url.lower().endswith("github.io"):
+        base = "/" + m.group(1)
     name = os.path.basename(root)
     m = re.search(r"(CS\d+|CIE\d+)", name, re.I)
-    course = m.group(1).lower() if m else re.sub(r"\W", "", name.lower())[:8]
+    course = m.group(1).lower() if m else re.sub(r"\W", "", re.sub(r"^ursinus-", "", name.lower()))[:12]
     # GitHub Pages paths are case-sensitive: lower-case only the host
     return {"url": (url.lower() + base) if url else "", "course": course}
 
 
+def write_page(root, page, lines):
+    """Write a page back with the line ending it had (many course pages use CRLF): reading
+    normalizes to \\n, so writing "\\n" would rewrite every line of such a page."""
+    path = os.path.join(root, page)
+    crlf = b"\r\n" in open(path, "rb").read()
+    with open(path, "w", encoding="utf-8", newline="\r\n" if crlf else "\n") as f:
+        f.write("\n".join(lines))
+
+
+def submodule_dirs(root):
+    """Paths of the repo's submodules (from .gitmodules), so their pages are never read or edited."""
+    try:
+        txt = open(os.path.join(root, ".gitmodules"), encoding="utf-8").read()
+    except OSError:
+        return set()
+    return {os.path.normpath(m) for m in re.findall(r"^\s*path\s*=\s*(.+?)\s*$", txt, re.M)}
+
+
 def pages(root, only=None):
+    """Every Markdown page under _pages (Activities, Tutorials, Labs, Modules, Assignments, Projects and
+    notes pages), except submodules such as _pages/Exercises (section 4, Pages)."""
     out = []
-    for sub in ("_pages/Activities", "_pages/Tutorials"):
-        d = os.path.join(root, sub)
-        for dp, _, fn in os.walk(d):
-            for f in sorted(fn):
-                if f.endswith(".md"):
-                    p = os.path.relpath(os.path.join(dp, f), root)
-                    if only is None or os.path.normpath(p) == os.path.normpath(only):
-                        out.append(p)
+    subs = submodule_dirs(root)
+    base = os.path.join(root, "_pages")
+    for dp, dn, fn in os.walk(base):
+        rel = os.path.relpath(dp, root)
+        dn[:] = sorted(d for d in dn if os.path.normpath(os.path.join(rel, d)) not in subs and not d.startswith("."))
+        for f in sorted(fn):
+            if f.endswith(".md"):
+                p = os.path.relpath(os.path.join(dp, f), root)
+                if only is None or os.path.normpath(p) == os.path.normpath(only):
+                    out.append(p)
     return sorted(out)
 
 
@@ -753,24 +872,33 @@ def parse_label(text):
 
 
 def blocks(root, page):
-    """Fenced blocks of a page that start at column 0: (start line index, end index, lang, code, label)."""
+    """Fenced blocks of a page: (start line index, end index, lang, code, label, indent, heading).
+
+    A fence may be indented up to 12 spaces (a code block inside a list item); its closing fence must
+    have the same indent, and the code is returned with that indent removed. `heading` is the text of
+    the nearest heading above the block (used to skip solution blocks)."""
     lines = open(os.path.join(root, page), encoding="utf-8", errors="replace").read().split("\n")
-    out, i = [], 0
+    out, i, heading = [], 0, ""
     while i < len(lines):
         m = FENCE.match(lines[i])
         if m:
-            tok, lang = m.group(1), (m.group(2) or "").lower()
+            ind, tok, lang = m.group(1), m.group(2), (m.group(3) or "").lower()
+            close = ind + tok[0] * len(tok)
             j = i + 1
-            while j < len(lines) and not lines[j].startswith(tok[0] * len(tok)):
+            while j < len(lines) and not lines[j].startswith(close):
                 j += 1
             label = None
             k = i - 1
             if k >= 0 and LABEL.match(lines[k]):
                 label = parse_label(LABEL.match(lines[k]).group(1))
-            out.append({"start": i, "end": j, "lang": LANG_ALIASES.get(lang, lang), "code": "\n".join(lines[i + 1:j]),
-                        "label": label, "page": page})
+            body = [l[len(ind):] if l.startswith(ind) else l.lstrip(" ") for l in lines[i + 1:j]]
+            out.append({"start": i, "end": j, "lang": LANG_ALIASES.get(lang, lang), "code": "\n".join(body),
+                        "label": label, "page": page, "indent": ind, "heading": heading})
             i = j + 1
             continue
+        h = HEADING.match(lines[i])
+        if h:
+            heading = h.group(1)
         i += 1
     return out, lines
 
@@ -901,6 +1029,8 @@ def interp_page(lab, b):
 def suggest(b):
     """A suggested label for an unlabeled block, or None when it is not a runnable example."""
     code, lang = b["code"], b["lang"]
+    if SOLUTION.search(b.get("heading") or ""):
+        return None     # under a Solution / Answer key heading: never labeled (section 4)
     n = len([l for l in code.splitlines() if l.strip()])
     if lang == "python" and n >= 3:
         import ast
@@ -918,7 +1048,16 @@ def suggest(b):
                 mods.add(node.module.split(".")[0])
         if AGENT_HINTS.search(code) and mods <= STDLIB | {"ollama", "httpx", "openai"}:
             return {"viz": "agent", "lang": "python", "record": True}
-        if not mods <= STDLIB or not re.search(r"\bprint\s*\(", code):
+        prints = re.search(r"\bprint\s*\(", code)
+        draws = bool(mods & ({"matplotlib", "seaborn"} | GRAPHICS)) or re.search(r"\bplt\.", code)
+        if mods & ML and mods <= STDLIB | EXTRA | ML:
+            # PyTorch: output and figures only, in the CPU-only python-ml runner, with more time
+            return {"viz": "plain", "lang": "python", "runner": "python-ml", "timeout": "120"} if (prints or draws) else None
+        if not mods <= STDLIB | EXTRA:
+            return None
+        if draws:
+            return {"viz": "plain", "lang": "python"}   # figures (section 7); stepping would draw Figure objects
+        if not prints:
             return None
         return {"viz": "env", "lang": "python"}
     if lang == "scheme" and n >= 1 and code.count("(") == code.count(")"):
@@ -1074,6 +1213,14 @@ def job_for(b, root, src_dir, lookup=None):
         job["input"] = lab["input"]
     if lab.get("args"):
         job["args"] = lab["args"]
+    if lab.get("runner"):
+        job["runner"] = lab["runner"]
+    if lab.get("setup_src"):
+        # a notebook cell: every earlier code cell runs first, like a setup= chain (section 4, Notebooks)
+        sfile = f"{lab['id']}/setup.py"
+        open(os.path.join(src_dir, sfile), "w", encoding="utf-8").write(lab["setup_src"] + "\n")
+        job["setup"] = sfile
+        job["setup_ids"] = [lab.get("setup_desc", "earlier notebook cells")]
     if lab.get("setup"):
         # setup=<id>[,<id>]: earlier blocks whose code runs first, untraced and silent (section 4)
         if lang != "python":
@@ -1105,6 +1252,9 @@ def job_for(b, root, src_dir, lookup=None):
 
 
 def runner_for(job):
+    # runner=NAME in a label picks a runner image by name (python-ml: PyTorch on CPU, section 2)
+    if job.get("runner") and os.path.isdir(os.path.join(RUNNERS, job["runner"])):
+        return job["runner"]
     return RUNNER_OF.get((job["viz"], job["lang"])) or PLAIN_RUNNER.get(job["lang"], "python")
 
 
@@ -1167,6 +1317,8 @@ def all_blocks(root, page=None):
     for p in pages(root, page):
         bs, _ = blocks(root, p)
         out += bs
+    if page is None or page.endswith(".ipynb"):
+        out += NB.blocks(root, page)   # examples listed in viz/notebooks.json
     return out
 
 
@@ -1212,7 +1364,9 @@ def cmd_catalog(a):
         print(f"config blocks that do not parse: {len(invalid)}")
         for x in invalid[:10]:
             print("  " + x)
-    if not a.page:  # viz/catalog.json is the whole site's catalog; a --page run must not shrink it
+    # viz/catalog.json is the whole site's catalog; a --page run must not shrink it, and a repo that does
+    # not use code-viz yet (no labels, no viz/) gets no viz/ folder from a look around
+    if not a.page and (labeled or os.path.isdir(os.path.join(root, "viz"))):
         os.makedirs(os.path.join(root, "viz"), exist_ok=True)
         json.dump({"labeled": [{"id": b["label"]["id"], "page": b["page"], "line": b["start"] + 1} for b in labeled],
                    "suggested": [{"page": b["page"], "line": b["start"] + 1, **s} for b, s in sugg],
@@ -1263,23 +1417,78 @@ def cmd_links(a):
         if a.check:
             continue
         for b in sorted(todo, key=lambda b: -b["start"]):   # bottom-up keeps line numbers valid
-            lines.insert(link_slot(lines, b), link_line(info, b["label"]["id"]))
-        open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+            lines.insert(link_slot(lines, b), b.get("indent", "") + link_line(info, b["label"]["id"]))
+        write_page(root, page, lines)
     verb = "missing" if a.check else "added"
+    missing += NB.add_links(root, info, pages(root, a.page), LINK_MARK, check=a.check)  # notebook examples
     print(f"{missing} link(s) {verb}")
     return 1 if (a.check and missing) else 0
+
+
+def label_notebooks(a, root, info, docker):
+    """label --notebooks: list the notebook cells that print or draw in viz/notebooks.json (with --try,
+    only those that run cleanly after the earlier cells), then optionally add the page links."""
+    idx = NB.load_index(root)
+    listed = {n["file"]: n for n in idx.get("notebooks", [])}
+    have = {e["id"] for n in listed.values() for e in n.get("examples", [])}
+    cands = []
+    for nb in NB.find(root):
+        if a.page and os.path.normpath(a.page) != os.path.normpath(nb):
+            continue
+        cells = NB.code_cells(root, nb)
+        done = {e["cell"] for e in listed.get(nb, {}).get("examples", [])}
+        for k, code in enumerate(cells, 1):
+            v = NB.suggest(code)
+            vid = f"{info['course']}-nb-{slug(nb)}-{k}"
+            if k in done or not v or vid in have or (a.viz and v != a.viz):
+                continue
+            cands.append(NB.block(nb, cells, k, {"id": vid, "viz": v}))
+    keep = cands
+    if docker and cands:
+        src = tempfile.mkdtemp(prefix="code-viz-try-")
+        try:
+            traces = run_jobs([job_for(b, root, src) for b in cands], docker, src)
+        finally:
+            shutil.rmtree(src, ignore_errors=True)
+        def good(b):
+            t = traces.get(b["label"]["id"], {})
+            return not t.get("error") and bool((t.get("stdout") or "").strip() or t.get("figures") or t.get("steps"))
+        keep = [b for b in cands if good(b)]
+    for b in keep:
+        n = listed.setdefault(b["notebook"], {"file": b["notebook"], "examples": []})
+        n["examples"].append({"id": b["label"]["id"], "cell": b["cell"], "viz": b["label"]["viz"]})
+    idx["notebooks"] = list(listed.values())
+    NB.save_index(root, idx)
+    per = {}
+    for b in keep:
+        per[b["notebook"]] = per.get(b["notebook"], 0) + 1
+    for nb, k in sorted(per.items()):
+        print(f"{nb}: labeled {k} cell(s)")
+    print(f"labeled {len(keep)} of {len(cands)} notebook candidate(s)")
+    if a.links:
+        NB.add_links(root, info, pages(root), LINK_MARK)
+    return 0
 
 
 def cmd_label(a):
     root = repo_root()
     info = site_info(root)
     docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network) if a.try_run else None
+    if getattr(a, "notebooks", False):
+        try:
+            return label_notebooks(a, root, info, docker)
+        finally:
+            if docker:
+                docker.cleanup()
     total = 0
     mini_interp = {}      # page -> does it build a Python Mini interpreter (interp=page)
+    taken = set()         # ids given out earlier in this run
     try:
         for page in pages(root, a.page):
             bs, lines = blocks(root, page)
-            used = {b["label"]["id"] for b in bs if b["label"]}
+            # ids are unique across the whole site: two pages with the same file name in different
+            # folders (Labs/lab1.md, Assignments/lab1.md) would otherwise make the same ids
+            used = {b["label"]["id"] for b in bs if b["label"]} | set(block_lookup(root)) | taken
             n = 1
             cands = []
             earlier = []          # Python blocks above, for setup= suggestions
@@ -1311,6 +1520,7 @@ def cmd_label(a):
                     n += 1
                 vid = f"{info['course']}-{slug(page)}-{n}"
                 used.add(vid)
+                taken.add(vid)
                 b["label"] = dict(s, id=vid)
                 lookup[vid] = b
                 cands.append(b)
@@ -1323,8 +1533,8 @@ def cmd_label(a):
                 traces = run_jobs(jobs, docker, src)
                 def good(b):
                     t = traces[b["label"]["id"]]
-                    if t.get("error") or not (t.get("stdout") or t.get("steps")):
-                        return False
+                    if t.get("error") or not (t.get("stdout") or t.get("steps") or t.get("figures")):
+                        return False   # a drawing counts as output (section 7, Figures)
                     if b["label"]["viz"] == "lambda":  # only terms that actually reduce
                         return len((t.get("orders") or {}).get("normal") or t.get("steps") or []) > 1
                     if b["label"]["viz"] == "env" and b["label"]["lang"] == "scheme" and t.get("approximate"):
@@ -1340,13 +1550,16 @@ def cmd_label(a):
                 fields = " ".join([f"id={lab['id']}", f"viz={lab['viz']}"] + ([f"lang={lab['lang']}"] if lab["lang"] != b["lang"] else [])
                                   + ([f"setup={lab['setup']}"] if lab.get("setup") else [])
                                   + ([f"interp={lab['interp']}"] if lab.get("interp") else [])
+                                  + ([f"runner={lab['runner']}"] if lab.get("runner") else [])
+                                  + ([f"timeout={lab['timeout']}"] if lab.get("timeout") else [])
                                   + (["record"] if lab.get("record") else []))
                 if a.links:
                     after = link_slot(lines, b)
                     if not (after < len(lines) and LINK_MARK in lines[after]):
-                        lines.insert(after, link_line(info, lab["id"]))
-                lines.insert(b["start"], f"<!-- run: {fields} -->")
-            open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+                        lines.insert(after, b.get("indent", "") + link_line(info, lab["id"]))
+                lines.insert(b["start"], f"{b.get('indent', '')}<!-- run: {fields} -->")
+            if keep:
+                write_page(root, page, lines)
             total += len(keep)
             print(f"{page}: labeled {len(keep)} of {len(cands)} candidate(s)")
     finally:
@@ -1404,6 +1617,7 @@ def cmd_unlabel(a):
     """Remove examples: their label, their Visualize link, their trace and expected output."""
     root = repo_root()
     gone = set(a.ids)
+    NB.unlabel(root, gone)   # notebook examples are listed in viz/notebooks.json
     for page in pages(root):
         bs, lines = blocks(root, page)
         hits = [b for b in bs if b["label"] and b["label"].get("id") in gone]
@@ -1416,7 +1630,7 @@ def cmd_unlabel(a):
             del lines[b["start"] - 1]
             print(f"{page}: unlabeled {b['label']['id']}")
         if hits:
-            open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+            write_page(root, page, lines)
     site = os.path.join(root, "viz")
     for vid in gone:
         for p in (os.path.join(site, "traces", vid + ".json"), os.path.join(site, "expected", vid + ".out")):
@@ -1752,6 +1966,7 @@ def main():
     l.add_argument("--links", action="store_true", help="add a Visualize link under each labeled block")
     l.add_argument("--agents", action="store_true", help="also label agent examples (recorded, not re-run)")
     l.add_argument("--ollama-network", help="Docker network with an Ollama container, for --try on agent examples")
+    l.add_argument("--notebooks", action="store_true", help="label cells of the notebooks under files/ (viz/notebooks.json) instead of pages")
     l.set_defaults(fn=cmd_label)
     r = sub.add_parser("run", help="run one example (id or file) and write its trace")
     r.add_argument("target"); r.add_argument("--viz"); r.add_argument("--input"); r.add_argument("--id")

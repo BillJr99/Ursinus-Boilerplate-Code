@@ -234,6 +234,8 @@
     if (t.kind === "agent" && steps.some((e) => e.line !== undefined))  // recordings with lines: output so far
       out = steps.slice(0, state.step + 1).filter((e) => e.type === "print" || e.type === "prompt").map((e) => e.text + "\n").join("");
     $("output").innerHTML = esc(out) + (t.error && state.step === n - 1 ? `<span class="err">\n${esc(t.error)}</span>` : "");
+    // figures the example drew (figures.js): shown as the output reaches them in a stepped trace
+    if (window.cvizFigures) window.cvizFigures.show(t, $("figures"), out.length, !(t.kind === "env" || t.kind === "c") || state.step >= n - 1);
     const P = { env: t.language === "scheme" ? schemePanel : pyPanel, lambda: lambdaPanel, bison: bisonPanel, automaton: autoPanel,
                 c: cPanel, agent: agentPanel, cast: castPanel };
     (P[t.kind] || plainPanel)(t, s, steps);

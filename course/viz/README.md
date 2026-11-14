@@ -33,13 +33,16 @@ its `code/` submodule, so a course runs it as `code/course/viz/code-viz` from th
 ```
 course/viz/
   code-viz        the command (this file): catalog, label, unlabel, run, build, serve, qr, readme
-  runners/        one Dockerfile per toolchain: python, scheme, c, flexbison, mini, haskell,
-                  prolog, ocaml, agents, shell, qr
+  runners/        one Dockerfile per toolchain: python, python-ml (PyTorch, CPU), scheme, c,
+                  flexbison, mini, haskell, prolog, ocaml, agents, shell, qr
   tracers/        step tracers that run inside the containers: driver.py (dispatch), pytrace.py,
                   schemetrace.py, lambdatrace.py, cstep_gdb.py, bisontrace.py, automaton.py,
                   agentrec.py, shellcast.py, cviz-repl.scm. pytrace, schemetrace, lambdatrace and
                   automaton are pure Python, so the viewer also runs them in the browser (Pyodide).
-  viewer/         the static viewer: index.html, viewer.js, viewer.css
+                  cviz_mplbackend.py draws figures headlessly, and pystubs/ holds the turtle,
+                  ezgraphics and google.colab stand-ins (section 7, Figures).
+  notebooks.py    Jupyter notebooks under files/ as a source of examples (section 4, Notebooks)
+  viewer/         the static viewer: index.html, viewer.js, viewer.css, figures.js (figures)
   screenshot.py   headless-browser screenshots and render checks of a built viewer
   workflow.yml    the GitHub Actions template for course repos ("code-viz check")
   README.md       generated from this header by `code-viz readme --write`
@@ -47,9 +50,11 @@ course/viz/
 
 The pipeline, left to right:
 
-1. **Catalog.** `code-viz catalog` scans `_pages/**/*.md` for fenced blocks at column 0. A block is
-   an example when a label comment sits on the line above its fence (section 4). Files that are not
-   blocks (bison grammars, `.dot` automata) come from `viz/manifest.json`.
+1. **Catalog.** `code-viz catalog` scans every page under `_pages/` (except submodules such as
+   `_pages/Exercises`) for fenced blocks, at column 0 or indented inside a list item. A block is an
+   example when a label comment sits on the line above its fence (section 4). Files that are not
+   blocks come from `viz/manifest.json` (bison grammars, `.dot` automata) and `viz/notebooks.json`
+   (notebook cells).
 2. **Runners.** Each example's language picks a runner image, built from `runners/<name>/Dockerfile`
    with `docker build --network host` and labelled `code-viz=1`.
 3. **Tracers.** One container per batch runs `tracers/driver.py`, which runs each job with the right
@@ -98,6 +103,7 @@ LiaScript and Jekyll do not show HTML comments, so students never see the label.
 | `interp=page` | Mini (or any language a page builds an interpreter for): run the page's own Python interpreter with this block as its input program (below); `interp=<path>.md` uses another page's |
 | `entry="..."` | with `interp=`: the interpreter's command line, `{file}` standing for the program (default `runner.py --file {file}`) |
 | `record` | agent examples: replay the committed recording; never re-run in CI |
+| `runner=NAME` | run in `runners/NAME` instead of the language's runner (`python-ml` for PyTorch; `label` adds it) |
 
 **Ids.** `label` makes ids as `<course>-<page>-<n>`: the course from the repo name (`cs374`), the
 page's file name lowercased with other characters turned into hyphens (`liascript-scope-chains`),
@@ -153,6 +159,46 @@ gets its value). Without `interp=`, a Mini block still uses
 `entry="mini.py {file}"`. Student mode's Edit and run does not re-run interpreter examples (they need
 the runner), so it shows the recorded run.
 
+**Pages.** Every Markdown page under `_pages/` is read: Activities, Tutorials, Labs, Modules,
+Assignments, Projects and notes pages, but never a submodule listed in `.gitmodules` (such as
+`_pages/Exercises`, which belongs to Ursinus-Exercises). Fences may start at column 0 or be indented
+up to 12 spaces, as a code block inside a list item is; the label and the link line are written with
+the same indent, so they stay inside the list item. Ids are unique across the site: two pages with
+the same file name in different folders get different numbers. Pages are written back with the line
+ending they had (many course pages use CRLF), and a page is only written when a label or link was
+added, so a `label` run that keeps nothing leaves the page byte for byte unchanged.
+
+**Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
+a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
+is a page to fix, not an example).
+
+**Site address.** Links and QR codes use `<url>/<repo name>` when the site is on GitHub Pages: the
+repo name comes from the git remote, because a parent repo's `_config.yml` often keeps the
+`baseurl` of the term it was copied from. In a repo without a remote, `_config.yml`'s `url` and
+`baseurl` are used. A repo name without a course number (Ursinus-WebMobile) gives ids starting with
+the name (`webmobile-...`).
+
+**Notebooks.** Jupyter notebooks under `files/` are a source of examples. A notebook cannot carry
+labels, so its examples are listed in `viz/notebooks.json`:
+
+    {"notebooks": [{"file": "files/notebooks/ab_test_analysis.ipynb",
+                    "examples": [{"id": "cs474-nb-ab-test-analysis-2", "cell": 2, "viz": "env"}]}]}
+
+`cell` counts code cells only, from 1. An example runs like a `setup=` cell: every earlier code cell
+of the notebook runs first, untraced and silent, then the cell is traced (`viz=env`, for a short
+standard-library cell that prints) or run for its output and figures (`viz=plain`). IPython-only
+lines (`%matplotlib inline`, `!pip install`) become comments. `google.colab` is a stand-in whose
+`drive.mount()` does nothing, so a Colab notebook's setup runs; a cell that then reads Drive files
+fails and is not labeled. Cells that import TensorFlow, Keras, PyTorch or transformers are not
+suggested. `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
+and adds one line under the paragraph, list item or table that holds the first link to the notebook
+on any page:
+
+    [Visualize this notebook's examples](<site>/viz/#<first id>): [cell 2](<site>/viz/#<id>) [cell 3](...) <!-- code-viz link -->
+
+The viewer shows the earlier cells collapsed above the cell ("Setup code from code cells 1 to 3 of
+...").
+
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
 (`files/dotty/*.dot`) with their `id`, `viz`, `file`, `input` and optional `timeout`. `build`
 generates it from `files/` the first time; edit it afterwards to choose inputs.
@@ -183,7 +229,7 @@ code-viz catalog -v                     # also list every suggestion with its pa
 ```
 
 `catalog` writes `viz/catalog.json` (every labeled example and suggestion) only when run without
-`--page`, so a one-page look never shrinks it.
+`--page` and only in a repo that already has labels or a `viz/` folder, so a one-page look never shrinks it.
 
 ### label
 
@@ -198,7 +244,12 @@ chains.
 code-viz label --try --links
 code-viz label --try --links --lang scheme --page _pages/Activities/liascript-scheme.md
 code-viz label --agents --try --ollama-network cviz-ollama
+code-viz label --notebooks --try --links     # notebook cells (section 4, Notebooks)
 ```
+
+`--notebooks` labels notebook cells instead of page blocks (`--page` then names one notebook, and
+`--viz` limits the kind). `label --try` counts a run as good when it printed, stepped, or drew a
+figure.
 
 ### links
 
@@ -332,7 +383,23 @@ address (its output looks changed on every build; see the tips in section 13).
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once and replayed |
 | cast | shell | a terminal replay of each command and its output |
-| plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
+| plain | Haskell, Prolog, OCaml, Mini, Python that draws | the program and its output (no step trace); Mini with `interp=` also shows the Python interpreter that ran it |
+
+**Figures.** Every Python example runs with matplotlib's backend set to `tracers/cviz_mplbackend.py`,
+so each figure the program shows (`plt.show()`) or leaves open at exit is saved as a PNG and kept in
+the trace (`figures`), shown under the Output panel. In a stepped trace (env) a figure appears once
+the printed output reaches the point where the program showed it; in plain traces all figures show.
+`import turtle` and `import ezgraphics` load headless stand-ins from `tracers/pystubs`: the turtle
+stand-in records the drawing and saves it at `done()` or exit; the ezgraphics stand-in records each
+`GraphicsWindow` canvas (setFill, setOutline, drawRect/drawRectangle, drawOval, drawLine,
+drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
+growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
+example fails visibly and is not labeled. Figures are deterministic (72 dpi, at most 900 pixels wide,
+no metadata), at most 8 per example and 600 KB in all (more are counted as `figures_dropped`). Click
+a figure to open it full size. `label` suggests `viz=plain` for Python that uses matplotlib,
+seaborn, turtle or ezgraphics (stepping through it would draw Figure objects), and `runner=python-ml`
+with `timeout=120` for PyTorch. Edit and run in the browser does not capture figures; the recorded
+figures stay on screen.
 
 ## 8. Reading the viewer
 
@@ -496,7 +563,8 @@ One JSON file per example, `viz/traces/<id>.json` (published gzipped as `.json.g
   "steps": [ ... ],            kind-specific, below
   "stdout": "the whole output", "error": null or "message", "truncated": false,
   "page": "_pages/...md", "line": 123, "viz": "...", "lang": "...",
-  "setup": {"ids": [...], "source": "the setup code"}     only with setup=
+  "setup": {"ids": [...], "source": "the setup code"}     only with setup= (and notebook cells)
+  "figures": [{"png": "base64", "at": 123}], "figures_dropped": 2     only when the example drew
   "interp": {"page", "files": [...], "entry", "source"}       only with interp= (the interpreter that ran it)
 }
 ```
@@ -563,7 +631,7 @@ workflow token starts no other workflow; it only does so when the repo has `code
 **What it does** (on the branch that started it):
 
 1. Stops at once, changing nothing, when the repo has no code-viz labels (`<!-- run: ... -->` in
-   `_pages/`) and no `viz/index.json` or `viz/manifest.json`. A course that has not started using
+   `_pages/`) and no `viz/index.json`, `viz/manifest.json` or `viz/notebooks.json`. A course that has not started using
    code-viz therefore gets no `viz/` folder and no commits; `code-viz build` itself also writes
    nothing in that case.
 2. Clones Ursinus-Boilerplate-Code into the runner's temporary folder, outside the repo, at the
@@ -617,6 +685,10 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 | CI fails with "code-viz changed files outside viz/" | a code-viz bug wrote outside `viz/`; nothing was committed. The log lists the files; fix code-viz, then re-run the workflow |
 | CI committed `viz/` but the site did not change | "Deploy GitHub Pages" did not start (the log warns); run it by hand (Actions, Deploy GitHub Pages, Run workflow) |
 | a deck example has no Visualize link | it was labeled without `--links`: `code-viz links`, then commit the page |
+| a drawing example shows no figure | the program never called `plt.show()` and closed its figure, or the ezgraphics window was never drawn on; or the 8-figure / 600 KB cap was reached (`figures_dropped`) |
+| an ezgraphics or turtle example fails with AttributeError | it calls something the headless stand-in does not support (section 7, Figures): add it to `tracers/pystubs/`, or leave the block unlabeled |
+| a notebook cell fails in `label --notebooks --try` | an earlier cell needs data or a service the container does not have (Google Drive files, a GPU, the network); it stays unlabeled |
+| `label` rewrote every line of a page | it cannot now: pages keep their line ending and are only written when something was added; if an old copy did, `git checkout` the page |
 | every build changes an output | the example prints a time or random value (section 13) |
 | a lambda variable B or K acts like a combinator | predefined names; add `-- free: B` or use lowercase |
 | `label --try` refuses a cell that uses an earlier cell's names | label the earlier cell first, then run `label` again (it adds `setup=`), or write `setup=<id>` by hand |
@@ -641,6 +713,11 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 - Live mode is one machine's Docker; it does not scale to a whole class running at once.
 - The CI path filter misses submodule-only changes (section 16).
 - The viewer needs a current browser (DecompressionStream for the gzipped traces).
+- Not labeled on purpose (2026-11-14): CS170's `sounds` examples (they play audio), CS474's AutoGen
+  examples (pieces of an assignment's instructions, configured for OpenAI `gpt-4` with the student's
+  own key; recording them with Ollama would change the code students write), CS377's `pymongo` and
+  `cassandra` examples (they connect to database servers the container does not have), and
+  TensorFlow (too large for the runner).
 
 ## 19. Output files
 
@@ -650,7 +727,8 @@ viz/tracers/                                     the in-browser tracers (Pyodide
 viz/traces/<id>.json.gz                          one trace per example (section 14)
 viz/expected/<id>.out                            the expected output, checked by build --check
 viz/qr/<id>.svg, viz/qr/<id>.png                 QR codes of student links (code-viz qr)
-viz/index.json, viz/catalog.json, viz/manifest.json
+viz/figures.js                                    shows figures (section 7, Figures)
+viz/index.json, viz/catalog.json, viz/manifest.json, viz/notebooks.json
 ```
 
 ## 20. Testing code-viz itself

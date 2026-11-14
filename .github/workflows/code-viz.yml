@@ -5,7 +5,7 @@
 #
 # What it does, on the course repo's branch that started it (gh-pages):
 #   1. Stops at once, changing nothing, when the repo has no code-viz labels (<!-- run: ... -->
-#      in _pages/) and no viz/ site yet. Most parent repos are like that today.
+#      in _pages/), no listed notebook examples (viz/notebooks.json) and no viz/ site yet. Most parent repos are like that today.
 #   2. Gets code-viz: Ursinus-Boilerplate-Code at the commit the repo's code submodule points at
 #      (Boilerplate main when there is no submodule; fails if that commit is missing), cloned
 #      outside the repo (runner temp).
@@ -40,7 +40,7 @@ jobs:
       - name: Anything to build?
         id: any
         run: |
-          if grep -rqs --include='*.md' '<!-- run:' _pages || [ -f viz/index.json ] || [ -f viz/manifest.json ]; then
+          if grep -rqs --include='*.md' '<!-- run:' _pages || [ -f viz/index.json ] || [ -f viz/manifest.json ] || [ -f viz/notebooks.json ]; then
             echo "go=1" >> "$GITHUB_OUTPUT"
           else
             echo "No code-viz examples in this repo and no viz/ site; nothing to do."
