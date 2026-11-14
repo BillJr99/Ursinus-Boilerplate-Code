@@ -14,7 +14,8 @@ Contents: 1 What it is, 2 Architecture, 3 Quick start, 4 Labels and ids, 5 Comma
 6 Expected outputs and churn, 7 Kinds of visualization, 8 Reading the viewer, 9 Teacher view and
 student mode, 10 QR codes in class and on slides, 11 Live mode in class, 12 Recording agent examples,
 13 Tips, 14 Trace format, 15 Where things run and safety, 16 CI, 17 Troubleshooting,
-18 Known problems and limits, 19 Output files, 20 Testing code-viz itself.
+18 Known problems and limits, 19 Output files, 20 Testing code-viz itself, 21 Modes and URL
+arguments, 22 Explain mode and the tour format, 23 Simulate mode, sessions and recording.
 
 ## 1. What it is
 
@@ -824,3 +825,160 @@ docker run --rm -v $PWD:/w -w /w mcr.microsoft.com/playwright/python:v1.48.0-jam
 ```
 
 Remove the Playwright image and any containers and networks afterwards.
+
+## 21. Modes and URL arguments
+
+The viewer shows an example in up to three modes. A tab for each mode sits in the header, in the
+teacher view and in student mode, and only the modes the example has data for appear:
+
+| mode | answers | data |
+|---|---|---|
+| Run | what does this code do when it runs? | the trace, `viz/traces/<id>.json.gz` (everything in sections 7 to 14) |
+| Explain | how do we read and build up this code? | a tour, `viz/tours/<id>.json` (section 22) |
+| Simulate | what happens when we run these commands? | a recorded session, `viz/sessions/<id>.json.gz` (section 23) |
+
+You can switch tabs at any time, whatever mode the link opened in. Each mode keeps its own place, so
+going back to a tab returns to where you were. A tour's `run` step knows its trace step, so moving
+from Explain to Run lands on the same moment of the program.
+
+URL arguments. The old ones mean exactly what they always did, so every link and QR code already
+handed out keeps working:
+
+| argument | meaning |
+|---|---|
+| `#<id>` | the example to open |
+| `?student=1` | student mode (section 9) |
+| `?step=N` | Run mode: open at trace step N |
+| `?mode=run`, `explain` or `simulate` | the mode to open in (new) |
+| `&t=N` | Explain mode: open at tour step N, from 0 (new) |
+| `&s=N` | Simulate mode: open at session step N, from 0 (new) |
+| `&tour=<name>` | Explain mode: a named tour, when an example has more than one (new) |
+
+With no `mode`, the viewer opens in Run when there is a trace, else Explain, else Simulate. When the
+link asks for a mode the example has no data for, the viewer opens the best mode it has and says so
+in one line above the code; it never shows an error page. The QR button encodes the current mode and
+step, so students land on what is on the screen.
+
+Presenter keys, in every mode: Space or the right arrow for the next step, the left arrow for the
+previous one, Home for the first, B to blank the screen (any key brings it back), and 1, 2 or 3 to
+switch to Run, Explain or Simulate.
+
+`viz/index.json` lists each example's `modes` (for example `["run", "explain"]`) and, when an example
+has named tours, `tours`. An entry with no `modes` is Run only. A repo with no `codeviz/` folder and
+no `viz=session` blocks gets no `modes` at all, so its `viz/` stays exactly as it was.
+
+## 22. Explain mode and the tour format
+
+A tour is a guided walkthrough of one example: show the lines in reading order, point at the line
+that matters, ask the class to predict, then show the program's state at that moment. Tours are
+written by hand (or drafted, below) and live outside `viz/`, because CI owns `viz/`:
+
+- `codeviz/tours/<id>.json` is the default tour of example `<id>`;
+- `codeviz/tours/<id>--<name>.json` is another tour of the same example (URL `&tour=<name>`).
+
+`code-viz build` checks every tour and publishes the good ones to `viz/tours/`. A tour with a problem
+is listed in the build's output and not published, so a broken tour never reaches students.
+
+The format (version 1) is defined in `schemas/tour.schema.json`. Field names follow VS Code's
+CodeTour where the two overlap (`title`, `description`, `steps[].title`, `steps[].description`,
+`steps[].line`), so a tour reads naturally to anyone who knows CodeTour:
+
+```
+{"version": 1, "example": "cs374-liascript-scope-chains-1", "title": "The paper machine, executed",
+ "description": "How a lookup walks the chain of frames.", "reviewed": false,
+ "steps": [
+  {"kind": "reveal", "lines": "1-4", "description": "Start with the frame: a dictionary and a parent."},
+  {"kind": "focus", "lines": "9-10", "description": "lookup walks the chain upward."},
+  {"kind": "predict", "question": "Which x does the inner lookup find?", "answer": "The innermost one."},
+  {"kind": "run", "trace_step": 41, "lines": "9", "description": "Here is the walk, one frame at a time."},
+  {"kind": "stage", "stage": "cs374-liascript-scope-chains-2", "description": "Now add assignment."}
+ ]}
+```
+
+| kind | what it does | needs |
+|---|---|---|
+| `reveal` | shows these lines, added to the lines already shown; the rest stay hidden | `lines` |
+| `focus` | highlights these lines and dims the rest | `lines` |
+| `predict` | asks the question; the answer appears with Reveal answer or on the next step | `question` (and `answer`) |
+| `run` | shows the program's state at a trace step, the same view as Run mode | `trace_step` |
+| `stage` | switches the code to another labeled block (building code up), animating only the lines that changed | `stage` (a block id) |
+
+`lines` are 1-based line numbers of the example's code, as ranges (`"1-4,9"`); `line: N` (CodeTour's
+form) means the same as `lines: "N"`. In a source file, `note` is accepted for `description`. Every
+step must say something: a `description`, a `question` or a `title`. There are no timings in a tour.
+
+A build-up tour moves through stages: each stage is its own labeled block on the page, usually
+chained with `setup=` so each one runs. From a `stage` step on, line numbers refer to that stage's
+code, and `run` steps use that stage's trace.
+
+`reviewed` is false until Bill has read the tour; the viewer marks an unreviewed tour with a small
+"draft" badge, and `source` records who drafted it.
+
+Commands:
+
+```
+code-viz tour check [ids] [-v]       check every tour (schema, lines inside the code, trace steps, stage ids)
+code-viz tour draft <ids> | --all    write a drafting prompt per example (default codeviz/drafts/)
+```
+
+`tour draft` writes, for each example, a prompt with the code (numbered), the deck's own text before
+and after it, the trace's first visit to each line, the format above, and Bill's writing rules in
+short form. code-viz calls no model itself: a person or a helper gives the prompt to a model, saves
+the reply as `codeviz/tours/<id>.json`, and runs `tour check`. `codeviz/drafts/` is never published.
+
+## 23. Simulate mode, sessions and recording
+
+A session is a terminal session that was run for real and recorded: shell commands and Docker
+commands, each with its output, its exit status, and what Docker looked like afterwards. The viewer
+replays it step by step, so a class can watch containers start, see which folder a container can
+reach, and try the next command themselves, without Docker on their own machines.
+
+Nothing is simulated by guessing. A session's output is always a recording of the real commands, and
+a command that was not recorded gets a hint, never made-up output.
+
+Where a session comes from:
+
+- a scenario file, `codeviz/sessions/<id>.json` (or `.yaml`), for a session that is not on a page;
+- a shell block on a page labeled `viz=session`: its commands are the scenario, one per line (a
+  leading `$ ` is dropped, comment lines are skipped, a line ending in `\` joins the next). Label
+  fields `images=a,b`, `network=` and `timeout=` fill in the rest.
+
+A scenario (format version 1, `schemas/session.schema.json`):
+
+```
+{"version": 1, "id": "cs357-isolation-1", "title": "A container that sees one folder",
+ "scenario": {"commands": ["mkdir -p shared && echo hi > shared/note.txt",
+                           "docker run --rm -v \"$PWD/shared:/data:ro\" alpine:3.20 ls /data"],
+              "images": ["alpine:3.20"], "network": "isolated", "watch": ["shared"]},
+ "branches": [{"name": "no-mount", "after": 1, "description": "Forget -v: the container sees nothing.",
+               "commands": ["docker run --rm alpine:3.20 ls /data"]}]}
+```
+
+- `commands` run in order in one shell, so `cd` and variables carry over;
+- `images` are pulled first and must name a tag (never `latest`);
+- `network` is `none` (no network at all), `isolated` (the sandbox's own Docker networks only, the
+  default) or `internet` (needed when a command downloads something);
+- `files` are written into the work folder first, and `watch` folders have their file listing
+  snapshotted after each command;
+- `branches` are "what if" variants: run the first `after` main-line steps, then these commands, and
+  record them too, so the class can see what goes wrong.
+
+`code-viz record <id>` runs the scenario on the recording host (minipc, with `--host`) inside a
+throwaway Docker-in-Docker sandbox: a pinned `docker:dind` container with its own Docker daemon, so
+nothing the session does touches the host's Docker. After each command it saves the output, the exit
+status, the time it took, and a snapshot of the sandbox's containers, images, networks, ports,
+volumes and watched folders. It then masks what changes from run to run (container and image ids,
+`sha256:` digests, timestamps, Docker's random container names, temporary paths) to stable labels
+such as `<container-1>`, adds any `masking` rules from the scenario, and writes
+`viz/sessions/<id>.json.gz`. The recording is committed, like agent recordings; CI never records.
+
+`code-viz session check` reports a scenario that has not been recorded, and a recording whose
+scenario changed since (it is stale; record it again). `code-viz record --check <id>` records again
+and lists what changed, so a new Docker version that changes a message shows up as a difference to
+look at, not a stale slide.
+
+The Simulate view: the terminal replay on the left, and on the right a `docker ps` panel and a
+diagram of containers, the networks that join them, published ports and mounted folders, updated at
+every step. Below the terminal, students can type the next command: if it is the command that was
+recorded (spacing aside), the recording plays; if it is not, they get a hint toward the expected
+command. Recorded branches are listed as buttons beside the step controls.

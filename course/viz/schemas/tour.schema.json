@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/BillJr99/Ursinus-Boilerplate-Code/course/viz/schemas/tour.schema.json",
+  "title": "code-viz tour (Explain mode), version 1",
+  "description": "One guided walkthrough of one code-viz example. Source: <course repo>/codeviz/tours/<id>.json (default tour) or <id>--<name>.json (named tour); `code-viz build` validates it and publishes it to viz/tours/. Field names follow VS Code CodeTour where they overlap (title, description, steps[].title, steps[].description, steps[].line). No timings. Manual: `code-viz readme`, section 22.",
+  "type": "object",
+  "required": ["version", "example", "title", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "version": {"const": 1},
+    "example": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "The labeled example's id (the <!-- run: id=... --> or notebook id)."},
+    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Tour name when an example has more than one (file <id>--<name>.json; URL &tour=<name>). Omitted for the default tour."},
+    "title": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "description": "One or two sentences shown before the first step."},
+    "reviewed": {"type": "boolean", "default": false, "description": "true only after Bill has read and checked the tour. Drafts stay false; the viewer marks unreviewed tours."},
+    "source": {"type": "string", "description": "Who drafted it, for example 'draft: omp llmproxy flagship free' or 'Bill'."},
+    "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}}
+  },
+  "$defs": {
+    "lines": {"type": "string", "pattern": "^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", "description": "1-based line ranges of the example's code, for example '1-4,9'."},
+    "step": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["reveal", "focus", "predict", "run", "stage"], "description": "reveal: show these lines (added to the lines already shown); focus: highlight these lines and dim the rest; predict: ask, the answer shows on Reveal answer or the next step; run: show the code's state at a step of its Run-mode trace; stage: switch the code to another labeled block (build-up), animating only the changed lines."},
+        "title": {"type": "string"},
+        "description": {"type": "string", "description": "The callout text (CodeTour's field name). `note` is accepted as an alias in sources."},
+        "lines": {"$ref": "#/$defs/lines"},
+        "line": {"type": "integer", "minimum": 1, "description": "CodeTour's single line; same as lines: 'N'."},
+        "question": {"type": "string", "description": "predict: the question students answer before the next step."},
+        "answer": {"type": "string", "description": "predict: the answer the class is steered toward."},
+        "trace_step": {"type": "integer", "minimum": 0, "description": "run: the Run-mode step (0-based, as ?step=N) to show; switching to Run mode lands there."},
+        "stage": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "stage: the id of the labeled block whose code is shown from this step on."}
+      }
+    }
+  }
+}
