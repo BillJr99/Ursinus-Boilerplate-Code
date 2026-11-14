@@ -29,8 +29,8 @@
         "images": {"type": "array", "items": {"type": "string"}, "description": "Images pulled into the sandbox before the first command, each pinned to a tag (and ideally a digest), never 'latest'."},
         "network": {"enum": ["none", "isolated", "internet"], "default": "isolated", "description": "none: no network for the session's containers; isolated: the sandbox's own Docker networks only; internet: the sandbox may reach the internet (needed to pull, or for curl examples)."},
         "files": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Files written into the session's work folder before the first command (path -> content)."},
-        "workdir": {"type": "string", "default": "/work"},
-        "watch": {"type": "array", "items": {"type": "string"}, "description": "Folders whose file listing is snapshotted after each command (for mounts)."},
+        "workdir": {"type": "string", "default": "/work", "description": "The work folder: the shell starts there and HOME is set to it, so $HOME/... and ~/... paths land inside it; its absolute path is masked to ~ in the recording."},
+        "watch": {"type": "array", "items": {"type": "string"}, "description": "Folders, relative to the work folder (HOME), whose file listing is snapshotted after each command (for mounts)."},
         "timeout": {"type": "integer", "minimum": 1, "default": 120, "description": "Seconds per command."},
         "shell": {
           "type": "object",
@@ -67,7 +67,8 @@
       "additionalProperties": false,
       "properties": {
         "cmd": {"type": "string"},
-        "output": {"type": "string", "description": "stdout and stderr interleaved, masked."},
+        "output": {"type": "string", "description": "Plain text: stdout and stderr interleaved as the terminal showed them, control codes removed, masked. Used for comparison and drift checks."},
+        "raw": {"type": "string", "description": "The same output with the terminal's control codes (colors, cursor moves), for the terminal view. Absent when it equals output."},
         "exit": {"type": "integer"},
         "duration": {"type": "number", "minimum": 0, "description": "Seconds, rounded to 0.1 (shown, never used for playback timing)."},
         "note": {"type": "string", "description": "Optional teaching note shown with the step."},

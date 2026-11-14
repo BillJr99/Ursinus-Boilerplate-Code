@@ -1037,8 +1037,8 @@ A scenario (format version 1, `schemas/session.schema.json`):
 - `images` are pulled first and must name a tag (never `latest`);
 - `network` is `none` (no network at all), `isolated` (the sandbox's own Docker networks only, the
   default) or `internet` (needed when a command downloads something);
-- `files` are written into the work folder first, and `watch` folders have their file listing
-  snapshotted after each command;
+- `files` are written into the work folder first, and `watch` folders (paths relative to the work
+  folder) have their file listing snapshotted after each command;
 - `branches` are "what if" variants: run the first `after` main-line steps, then these commands, and
   record them too, so the class can see what goes wrong;
 - `shell` (optional) runs the commands in a container from a pinned image instead of the sandbox's
@@ -1058,6 +1058,18 @@ volumes and watched folders. It then masks what changes from run to run (contain
 `sha256:` digests, timestamps, Docker's random container names, temporary paths) to stable labels
 such as `<container-1>`, adds any `masking` rules from the scenario, and writes
 `viz/sessions/<id>.json.gz`. The recording is committed, like agent recordings; CI never records.
+
+How each command runs, so a recording looks like a student's terminal and does not vary between runs:
+
+- the shell starts in the work folder (`workdir`, default `/work`) and HOME is set to it, both in the
+  sandbox's shell and in a `shell` image's container, so `$HOME/agents/work` and `~/notes` land inside
+  the work folder (and in `watch` listings); the work folder's absolute path is masked to `~`;
+- every command runs under a pseudo-terminal of a fixed size (100 columns by 30 rows) with its input
+  at end of file, so `docker run -it ...` and other programs that want a terminal work without anyone
+  typing; a command that waits for typed input sees end of file and goes on;
+- the output is kept twice: `raw`, with the terminal's control codes (colors, cursor moves), for the
+  terminal view, and `output`, plain text with the control codes removed, which comparison and drift
+  checks use, so a color change is not drift.
 
 `code-viz session check` reports a scenario that has not been recorded, and a recording whose
 scenario changed since (it is stale; record it again). `code-viz record --check <id>` records again
