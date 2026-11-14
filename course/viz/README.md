@@ -717,7 +717,8 @@ reaches only the Ollama network), one CPU, 1 GB of memory, 256 processes, a time
 and per batch, and the container is removed afterwards. A runner image is removed at the end of the
 command that built it unless `--keep-images`; an image the command found already there is left for
 whoever built it. Before every batch the runner image is checked and built again if it is missing,
-so two code-viz runs on one host at once (Bill's two-slot minipc, `bill-minipc-slot`) do not break
+and a batch whose container finds its image gone (removed in the moment between the check and the
+run) builds it again and reruns, up to twice, so two code-viz runs on one host at once (Bill's two-slot minipc, `bill-minipc-slot`) do not break
 each other: the first one to finish may remove a shared image, and the other rebuilds it (on
 2026-11-14 a CS374 build lost 60 examples that way before this). Runner images are built with
 `--network host` because downloads timed out on a default bridge network.
