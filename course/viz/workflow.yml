@@ -1,28 +1,19 @@
-# code-viz workflow template. Copy to a course repo as .github/workflows/code-viz.yml.
-# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 16 CI, 6 Expected outputs and churn.
+# code-viz: course repo caller. Copy to .github/workflows/code-viz.yml in a course repo.
+# The steps live in Ursinus-Boilerplate-Code/.github/workflows/code-viz.yml, so changing them there
+# changes every course. Full manual: the header of code-viz (`code-viz readme`), section 16 CI.
 #
-# It re-runs every labeled example (except recorded agent examples, which need Ollama and are
-# recorded on minipc and committed) and fails when an example's output changed or an example
-# stopped running, so a deck edit that breaks an example is caught. The viewer pages themselves
-# are committed in viz/ and published by the course's normal Pages build.
-#
-# How it runs: on a push to gh-pages that touches _pages/ or viz/manifest.json (or by hand), it checks
-# out the repo with its submodules and runs `code-viz build --check` with the GitHub runner's local
-# Docker (no --host). Runner images are built from code/course/viz/runners/ and removed afterwards.
-# Because traces are written deterministically and unchanged traces are not rewritten, a passing
-# check leaves the tree clean. Agent examples (Ollama) are skipped here; re-record them on minipc with
-# `code-viz build --record-agents --ollama-network NET` and commit the traces.
-# Known limits: the path filter means a change only in code/ (the submodule) does not trigger it;
-# run it by hand (Actions > code-viz check > Run workflow) after moving the submodule.
-name: code-viz check
+# Runs on a push to gh-pages that changes pages, files or viz/manifest.json, by hand (Actions >
+# code-viz > Run workflow), and from update-submodules.yml when the code submodule moved. In a repo
+# with no code-viz labels it does nothing. It commits only viz/.
+name: code-viz
 
 on:
   workflow_dispatch:
   push:
     branches: [gh-pages]
     paths:
-      - "_pages/Activities/**.md"
-      - "_pages/Tutorials/**.md"
+      - "_pages/**.md"
+      - "files/**"
       - "viz/manifest.json"
 
 concurrency:
@@ -30,15 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Re-run the examples and compare their outputs
-        run: python3 code/course/viz/code-viz build --check
-      - name: Show what changed
-        if: failure()
-        run: git status --short viz/ | head -50
+  build:
+    permissions:
+      contents: write
+      actions: write
+    uses: BillJr99/Ursinus-Boilerplate-Code/.github/workflows/code-viz.yml@main

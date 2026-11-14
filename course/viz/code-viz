@@ -105,7 +105,7 @@ anything unique (older CS357 ones look like `cs357-tut-llmjudges-3`). Keep an id
 use the ids written in `viz/manifest.json`.
 
 **Links.** `label --links` writes the "Visualize this example" line, marked `<!-- code-viz link -->`
-so `unlabel` can find it. It goes after any LiaScript run macro (`@LIA.eval(...)`, `@Pyodide.eval`)
+so `unlabel` can find it; `code-viz links` adds it later to labeled blocks that have none (section 5). It goes after any LiaScript run macro (`@LIA.eval(...)`, `@Pyodide.eval`)
 that follows the fence, so the deck's own Run button keeps working.
 
 **Setup cells.** A notebook-style page often has a Setup cell that later cells depend on (CS357's
@@ -197,6 +197,23 @@ chains.
 code-viz label --try --links
 code-viz label --try --links --lang scheme --page _pages/Activities/liascript-scheme.md
 code-viz label --agents --try --ollama-network cviz-ollama
+```
+
+### links
+
+Adds the "Visualize this example" line (`[Visualize this example](<site>/viz/#<id>)`, marked
+`<!-- code-viz link -->`) under every labeled block that has none, for blocks labeled without
+`label --links` or by hand. The line goes after the closing fence and after any LiaScript macro
+lines (`@LIA.eval(...)`) and `<script>` lines that belong to the block, so the deck's own Run button
+keeps working; a block that already has its link is left alone, so running it twice changes nothing.
+Options: `--page` (one page), `--check` (only list the blocks without a link, exit 1 if there are
+any). It edits pages, so it is run by hand and committed with the pages; CI never runs it (CI
+changes only `viz/`, section 16).
+
+```
+code-viz links --check
+code-viz links
+code-viz links --page _pages/Tutorials/tutorial-project-language-guide.md
 ```
 
 ### unlabel
@@ -509,6 +526,15 @@ downloads timed out on a default bridge network.
 On Bill's machines the containers run on minipc (`--host bill@10.0.0.26`, or `CODE_VIZ_HOST`),
 never on minipc2; staging folders move to `~/scratch/` when done.
 
+**What needs containers and what runs in the browser.** Containers are needed only to *build*:
+`build`, `run`, `label --try` and `serve`'s Run button. The published `viz/` is a static site: the
+viewer, every trace, the step controls, the QR dialog and student mode run entirely in the reader's
+browser with no server, from the course's GitHub Pages site, and keep working when no container
+host exists. Re-running an *edited* example in the browser (student mode's Edit and run) works for
+Python, Scheme, lambda calculus and automata, whose tracers run in Pyodide (loaded on first use);
+for C, bison, shell, agents and the plain languages (Haskell, Prolog, OCaml, Mini) the browser
+replays the recorded run, and editing them needs `code-viz serve` with a container host.
+
 Environment variables:
 
 | variable | meaning |
@@ -518,13 +544,60 @@ Environment variables:
 
 ## 16. CI
 
-`workflow.yml` is the template; course repos carry it as `.github/workflows/code-viz.yml`
-("code-viz check"). On a push to `gh-pages` that touches `_pages/Activities`, `_pages/Tutorials` or
-`viz/manifest.json`, or by hand, it checks out the repo with submodules and runs
-`code-viz build --check` on the GitHub runner's local Docker. Agent examples are skipped there. The
-path filter means moving only the `code` submodule does not trigger it: run it by hand
-(Actions, code-viz check, Run workflow, or `gh workflow run code-viz.yml`). The committed `viz/` is
-published by the course's normal Pages build.
+CI builds `viz/` and commits it, so nobody has to run `build` by hand after a deck edit.
+
+**Files.** The steps live in one shared workflow, `.github/workflows/code-viz.yml` in
+Ursinus-Boilerplate-Code. Each course repo carries a short caller, `.github/workflows/code-viz.yml`
+("code-viz"), copied from `course/viz/workflow.yml`, which runs the shared workflow at
+`Ursinus-Boilerplate-Code@main`. Changing the shared file changes every course at once.
+
+**When it runs.** On a push to `gh-pages` that changes `_pages/**.md`, `files/**` or
+`viz/manifest.json`; by hand (Actions, code-viz, Run workflow, or `gh workflow run code-viz.yml`);
+and after the course's `update-submodules.yml` ("Reset and Sync Submodules") moved the `code`
+submodule. That workflow's last step starts code-viz itself, because a commit pushed with the
+workflow token starts no other workflow; it only does so when the repo has `code-viz.yml` and the
+`code` pointer actually changed.
+
+**What it does** (on the branch that started it):
+
+1. Stops at once, changing nothing, when the repo has no code-viz labels (`<!-- run: ... -->` in
+   `_pages/`) and no `viz/index.json` or `viz/manifest.json`. A course that has not started using
+   code-viz therefore gets no `viz/` folder and no commits; `code-viz build` itself also writes
+   nothing in that case.
+2. Clones Ursinus-Boilerplate-Code into the runner's temporary folder, outside the repo, at the
+   commit the repo's `code` submodule points at (Boilerplate main when there is no submodule).
+3. Runs `code-viz build --check` with the runner's own Docker (runner images built and removed as
+   usual). Recorded agent examples are not re-run; their committed recordings are kept. When an
+   example stopped running it fails and commits nothing; a changed output is listed in the log
+   (expected outputs are only rewritten by `build --update-expected`, run by hand).
+4. Refuses to commit, and fails, when anything outside `viz/` changed, so pages, syllabi, decks,
+   `files/` and the other submodules are never touched by CI.
+5. When `viz/` changed, commits it as `github-actions[bot]` ("code-viz: rebuild viz/ [skip ci]"),
+   rebases onto the branch (three tries, for pushes that land meanwhile), pushes, and starts
+   "Deploy GitHub Pages" (`build-pages.yml`) by hand, since the bot's push starts no workflow.
+
+Because traces are written deterministically and unchanged traces are not rewritten, a run with no
+real change commits nothing. What CI does not do: label blocks, add links (`code-viz links`), record
+agent examples (needs Ollama: record on minipc, section 12), or update expected outputs.
+
+**Adding it to a course repo.** Copy `course/viz/workflow.yml` to `.github/workflows/code-viz.yml`,
+and add the last step of `update-submodules.yml` (the "Rebuild code-viz pages when the code
+submodule moved" step, with `id: autocommit` on the commit step and `actions: write` in its
+permissions). Both are safe in a repo with no examples. The added step, as it is in every course:
+
+```yaml
+      - name: Rebuild code-viz pages when the code submodule moved
+        if: steps.autocommit.outputs.changes_detected == 'true' && hashFiles('.github/workflows/code-viz.yml') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet HEAD~1 HEAD -- code; then
+            echo "code did not move; code-viz not needed"
+          else
+            gh workflow run code-viz.yml --ref "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" \
+              || echo "WARNING: could not start code-viz; run it by hand (Actions > code-viz > Run workflow)."
+          fi
+```
 
 ## 17. Troubleshooting
 
@@ -537,6 +610,9 @@ published by the course's normal Pages build.
 | `docker build` times out | the runner downloads need the network; code-viz builds with `--network host`; check the host's internet |
 | agent example errors "connection refused" | no Ollama answering to `ollama` on `--ollama-network`; see section 12 |
 | `build --check` fails after a deck edit | an example stopped running: fix the block, or `--update-expected` if the change is intended |
+| CI fails with "code-viz changed files outside viz/" | a code-viz bug wrote outside `viz/`; nothing was committed. The log lists the files; fix code-viz, then re-run the workflow |
+| CI committed `viz/` but the site did not change | "Deploy GitHub Pages" did not start (the log warns); run it by hand (Actions, Deploy GitHub Pages, Run workflow) |
+| a deck example has no Visualize link | it was labeled without `--links`: `code-viz links`, then commit the page |
 | every build changes an output | the example prints a time or random value (section 13) |
 | a lambda variable B or K acts like a combinator | predefined names; add `-- free: B` or use lowercase |
 | `label --try` refuses a cell that uses an earlier cell's names | label the earlier cell first, then run `label` again (it adds `setup=`), or write `setup=<id>` by hand |
@@ -1148,6 +1224,39 @@ def link_line(info, vid):
     return f"[Visualize this example]({info['url']}/viz/#{vid}) {LINK_MARK}"
 
 
+def link_slot(lines, b):
+    """Where a block's Visualize link goes: the line after its closing fence, past any LiaScript
+    @-macro lines (@LIA.eval ...) and <script> lines that belong to the block."""
+    after = b["end"] + 1
+    while after < len(lines) and (lines[after].strip().startswith("@") or lines[after].strip().startswith("<script")):
+        after += 1
+    return after
+
+
+def cmd_links(a):
+    """Add the missing "Visualize this example" line under every labeled block (section 5, links)."""
+    root = repo_root()
+    info = site_info(root)
+    missing = 0
+    for page in pages(root, a.page):
+        bs, lines = blocks(root, page)
+        todo = [b for b in bs if b["label"] and b["label"].get("id")]
+        todo = [b for b in todo if not (link_slot(lines, b) < len(lines) and LINK_MARK in lines[link_slot(lines, b)])]
+        if not todo:
+            continue
+        missing += len(todo)
+        for b in todo:
+            print(f"  {page}:{b['start'] + 1}  {b['label']['id']}")
+        if a.check:
+            continue
+        for b in sorted(todo, key=lambda b: -b["start"]):   # bottom-up keeps line numbers valid
+            lines.insert(link_slot(lines, b), link_line(info, b["label"]["id"]))
+        open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+    verb = "missing" if a.check else "added"
+    print(f"{missing} link(s) {verb}")
+    return 1 if (a.check and missing) else 0
+
+
 def cmd_label(a):
     root = repo_root()
     info = site_info(root)
@@ -1220,10 +1329,7 @@ def cmd_label(a):
                                   + ([f"interp={lab['interp']}"] if lab.get("interp") else [])
                                   + (["record"] if lab.get("record") else []))
                 if a.links:
-                    end = b["end"]
-                    after = end + 1
-                    while after < len(lines) and (lines[after].strip().startswith("@") or lines[after].strip().startswith("<script")):
-                        after += 1
+                    after = link_slot(lines, b)
                     if not (after < len(lines) and LINK_MARK in lines[after]):
                         lines.insert(after, link_line(info, lab["id"]))
                 lines.insert(b["start"], f"<!-- run: {fields} -->")
@@ -1367,8 +1473,10 @@ def collect(root, info, a, src):
     if not a.page and not a.lang:
         mpath = os.path.join(root, "viz", "manifest.json")
         man = json.load(open(mpath)) if os.path.exists(mpath) else default_manifest(root, info["course"])
-        os.makedirs(os.path.dirname(mpath), exist_ok=True)
-        json.dump(man, open(mpath, "w"), indent=1)
+        if man or os.path.exists(mpath):
+            # A repo with no grammars or automata gets no viz/manifest.json (and so no viz/ at all).
+            os.makedirs(os.path.dirname(mpath), exist_ok=True)
+            json.dump(man, open(mpath, "w"), indent=1)
         jobs += manifest_jobs(root, src, man)
     return jobs
 
@@ -1378,6 +1486,12 @@ def cmd_build(a):
     info = site_info(root)
     src = tempfile.mkdtemp(prefix="code-viz-build-")
     jobs = collect(root, info, a, src)
+    if not jobs and not os.path.exists(os.path.join(root, "viz", "index.json")):
+        # No labeled examples and no site yet (a course that has not started using code-viz):
+        # write nothing, so CI leaves the repo exactly as it was.
+        shutil.rmtree(src, ignore_errors=True)
+        print(f"no code-viz examples in {info['course']}; nothing written")
+        return 0
     print(f"building {len(jobs)} example(s) for {info['course']}")
     docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network)
     try:
@@ -1635,6 +1749,9 @@ def main():
     b.add_argument("--update-expected", action="store_true"); b.add_argument("--record-agents", action="store_true")
     b.add_argument("--manifest-only", action="store_true", help="only the grammars and automata in viz/manifest.json")
     b.add_argument("--ollama-network"); b.set_defaults(fn=cmd_build)
+    k = sub.add_parser("links", help="add the missing Visualize link under every labeled block")
+    k.add_argument("--page"); k.add_argument("--check", action="store_true", help="only list blocks without a link; exit 1 if any")
+    k.set_defaults(fn=cmd_links)
     u = sub.add_parser("unlabel", help="remove examples (label, link, trace)")
     u.add_argument("ids", nargs="+"); u.set_defaults(fn=cmd_unlabel)
     q = sub.add_parser("qr", help="QR codes (SVG and PNG) for examples' student links")

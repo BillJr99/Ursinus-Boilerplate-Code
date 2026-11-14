@@ -1,0 +1,100 @@
+# code-viz: build every labeled example and commit the course's viz/ folder (shared workflow).
+#
+# Course repos call this from their own .github/workflows/code-viz.yml (template:
+# course/viz/workflow.yml). Full manual: course/viz/code-viz, section 16 CI.
+#
+# What it does, on the course repo's branch that started it (gh-pages):
+#   1. Stops at once, changing nothing, when the repo has no code-viz labels (<!-- run: ... -->
+#      in _pages/) and no viz/ site yet. Most parent repos are like that today.
+#   2. Gets code-viz: Ursinus-Boilerplate-Code at the commit the repo's code submodule points at
+#      (Boilerplate main when there is no submodule), cloned outside the repo (runner temp).
+#   3. Runs `code-viz build --check` with the runner's own Docker: every labeled example and
+#      viz/manifest.json entry, except recorded agent examples (Ollama), whose committed
+#      recordings are kept. It fails, and commits nothing, when an example stopped running.
+#   4. Refuses to commit when anything outside viz/ changed, so pages, syllabi, decks and the other
+#      submodules are never touched.
+#   5. Commits viz/ as github-actions[bot] ("[skip ci]") when it changed, rebasing onto the branch
+#      first (three tries), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
+#      with the workflow token starts no other workflow.
+name: code-viz build
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check out the course branch (no submodules)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          submodules: false
+
+      - name: Anything to build?
+        id: any
+        run: |
+          if grep -rqs --include='*.md' '<!-- run:' _pages || [ -f viz/index.json ] || [ -f viz/manifest.json ]; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "No code-viz examples in this repo and no viz/ site; nothing to do."
+          fi
+
+      - name: Get code-viz
+        if: steps.any.outputs.go == '1'
+        run: |
+          SHA=$(git ls-tree HEAD code | awk '$2 == "commit" {print $3}')
+          git clone -q https://github.com/BillJr99/Ursinus-Boilerplate-Code.git "$RUNNER_TEMP/cv"
+          if [ -n "$SHA" ] && git -C "$RUNNER_TEMP/cv" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+            git -C "$RUNNER_TEMP/cv" checkout -q "$SHA"
+          fi
+          echo "code-viz at $(git -C "$RUNNER_TEMP/cv" log --oneline -1)"
+
+      - name: Build the examples
+        if: steps.any.outputs.go == '1'
+        run: python3 "$RUNNER_TEMP/cv/course/viz/code-viz" build --check
+
+      - name: Only viz/ may change
+        if: steps.any.outputs.go == '1'
+        run: |
+          OUTSIDE=$(git status --porcelain --untracked-files=all | grep -v -E '^.. viz/' || true)
+          if [ -n "$OUTSIDE" ]; then
+            echo "::error::code-viz changed files outside viz/; nothing was committed"
+            echo "$OUTSIDE"
+            exit 1
+          fi
+
+      - name: Commit viz/
+        id: commit
+        if: steps.any.outputs.go == '1'
+        run: |
+          git add -A viz
+          if git diff --cached --quiet; then
+            echo "viz/ is already up to date"
+            exit 0
+          fi
+          git diff --cached --stat | tail -3
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "code-viz: rebuild viz/ [skip ci]"
+          for try in 1 2 3; do
+            if git pull -q --rebase origin "$GITHUB_REF_NAME" && git push -q origin "HEAD:$GITHUB_REF_NAME"; then
+              echo "pushed=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::could not push viz/ after three tries"
+          exit 1
+
+      - name: Publish the site
+        if: steps.commit.outputs.pushed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build-pages.yml --ref "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+            || echo "::warning::could not start Deploy GitHub Pages; run it by hand"
