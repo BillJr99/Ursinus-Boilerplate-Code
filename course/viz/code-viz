@@ -424,8 +424,9 @@ commits nothing when nothing changed. Two mechanisms, both inside code-viz (no c
    build, every example whose new trace differs from the committed one runs once more. If the two
    new runs agree, the change is real and the new trace is written. If they disagree, the example is
    volatile (benchmark timings, thread scheduling, C stack addresses) and its id is added to
-   `viz/volatile.json`; two runs can agree by chance (an `ls -l` twice in the same minute), so an
-   example once seen to vary stays listed. For a volatile example (now or listed), when its code is
+   `viz/volatile.json`. Two runs can agree by chance (an `ls -l` twice in the same minute), so an
+   example whose two runs agree but whose trace differs from the committed one only in run-to-run
+   values runs a third time, and an example once seen to vary stays listed. For a volatile example (now or listed), when its code is
    the same as the committed trace's (source, setup, interpreter) and its output differs only in
    such values (numbers, hex addresses, `tmp...` temp names, month and day names) the committed
    trace is kept: its file is not touched. An example never seen to vary is always rewritten when
@@ -2144,12 +2145,20 @@ def settle(root, jobs, traces, docker, src):
     except (OSError, ValueError):
         volatile = set()
     seen = set()
+    # Two runs can agree by chance (both in the same minute). An example whose two runs agree but
+    # whose trace differs from the committed one only in run-to-run values runs a third time.
+    suspects = [v for v in differ if v not in volatile
+                and trace_text(traces[v], by[v]) == trace_text(again.get(v, {}), by[v])
+                and same_example(json.loads(trace_text(traces[v], by[v])), json.loads(stored_text(root, v)))]
+    third = run_jobs([by[v] for v in suspects], docker, src) if suspects else {}
     kept = []
     for vid in differ:
         first, second = trace_text(traces[vid], by[vid]), trace_text(again.get(vid, {}), by[vid])
+        if vid in third and trace_text(third[vid], by[vid]) != first:
+            second = trace_text(third[vid], by[vid])
         old = stored_text(root, vid)
         if first != second:
-            seen.add(vid)      # seen to vary between two runs: remembered in viz/volatile.json
+            seen.add(vid)      # seen to vary between runs: remembered in viz/volatile.json
         if (first != second or vid in volatile) and same_example(json.loads(first), json.loads(old)):
             # keep the committed trace file; expected outputs are still checked against this run
             traces[vid] = dict(json.loads(old), _kept=True, _first_stdout=traces[vid].get("stdout") or "")

@@ -425,8 +425,9 @@ commits nothing when nothing changed. Two mechanisms, both inside code-viz (no c
    build, every example whose new trace differs from the committed one runs once more. If the two
    new runs agree, the change is real and the new trace is written. If they disagree, the example is
    volatile (benchmark timings, thread scheduling, C stack addresses) and its id is added to
-   `viz/volatile.json`; two runs can agree by chance (an `ls -l` twice in the same minute), so an
-   example once seen to vary stays listed. For a volatile example (now or listed), when its code is
+   `viz/volatile.json`. Two runs can agree by chance (an `ls -l` twice in the same minute), so an
+   example whose two runs agree but whose trace differs from the committed one only in run-to-run
+   values runs a third time, and an example once seen to vary stays listed. For a volatile example (now or listed), when its code is
    the same as the committed trace's (source, setup, interpreter) and its output differs only in
    such values (numbers, hex addresses, `tmp...` temp names, month and day names) the committed
    trace is kept: its file is not touched. An example never seen to vary is always rewritten when
