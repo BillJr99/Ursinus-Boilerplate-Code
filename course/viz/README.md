@@ -205,8 +205,9 @@ code-viz label --agents --try --ollama-network cviz-ollama
 Adds the "Visualize this example" line (`[Visualize this example](<site>/viz/#<id>)`, marked
 `<!-- code-viz link -->`) under every labeled block that has none, for blocks labeled without
 `label --links` or by hand. The line goes after the closing fence and after any LiaScript macro
-lines (`@LIA.eval(...)`) and `<script>` lines that belong to the block, so the deck's own Run button
-keeps working; a block that already has its link is left alone, so running it twice changes nothing.
+lines (`@LIA.eval(...)`) and `<script>` elements (through their `</script>`, however many lines)
+that belong to the block, so the deck's own Run button keeps working; a block whose own link is
+anywhere on the page is left alone, so running it twice changes nothing.
 Options: `--page` (one page), `--check` (only list the blocks without a link, exit 1 if there are
 any). It edits pages, so it is run by hand and committed with the pages; CI never runs it (CI
 changes only `viz/`, section 16).
@@ -566,7 +567,8 @@ workflow token starts no other workflow; it only does so when the repo has `code
    code-viz therefore gets no `viz/` folder and no commits; `code-viz build` itself also writes
    nothing in that case.
 2. Clones Ursinus-Boilerplate-Code into the runner's temporary folder, outside the repo, at the
-   commit the repo's `code` submodule points at (Boilerplate main when there is no submodule).
+   commit the repo's `code` submodule points at (Boilerplate main when there is no submodule); it
+   fails when that commit is not in Ursinus-Boilerplate-Code.
 3. Runs `code-viz build --check` with the runner's own Docker (runner images built and removed as
    usual). Recorded agent examples are not re-run; their committed recordings are kept. When an
    example stopped running it fails and commits nothing; a changed output is listed in the log
@@ -574,7 +576,8 @@ workflow token starts no other workflow; it only does so when the repo has `code
 4. Refuses to commit, and fails, when anything outside `viz/` changed, so pages, syllabi, decks,
    `files/` and the other submodules are never touched by CI.
 5. When `viz/` changed, commits it as `github-actions[bot]` ("code-viz: rebuild viz/ [skip ci]"),
-   rebases onto the branch (three tries, for pushes that land meanwhile), pushes, and starts
+   fetches and rebases onto the branch (three tries, backing out a failed rebase each time, for
+   pushes that land meanwhile), pushes, and starts
    "Deploy GitHub Pages" (`build-pages.yml`) by hand, since the bot's push starts no workflow.
 
 Because traces are written deterministically and unchanged traces are not rewritten, a run with no

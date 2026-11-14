@@ -7,14 +7,15 @@
 #   1. Stops at once, changing nothing, when the repo has no code-viz labels (<!-- run: ... -->
 #      in _pages/) and no viz/ site yet. Most parent repos are like that today.
 #   2. Gets code-viz: Ursinus-Boilerplate-Code at the commit the repo's code submodule points at
-#      (Boilerplate main when there is no submodule), cloned outside the repo (runner temp).
+#      (Boilerplate main when there is no submodule; fails if that commit is missing), cloned
+#      outside the repo (runner temp).
 #   3. Runs `code-viz build --check` with the runner's own Docker: every labeled example and
 #      viz/manifest.json entry, except recorded agent examples (Ollama), whose committed
 #      recordings are kept. It fails, and commits nothing, when an example stopped running.
 #   4. Refuses to commit when anything outside viz/ changed, so pages, syllabi, decks and the other
 #      submodules are never touched.
-#   5. Commits viz/ as github-actions[bot] ("[skip ci]") when it changed, rebasing onto the branch
-#      first (three tries), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
+#   5. Commits viz/ as github-actions[bot] ("[skip ci]") when it changed, fetching and rebasing onto
+#      the branch first (three tries, backing out a failed rebase), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
 #      with the workflow token starts no other workflow.
 name: code-viz build
 
@@ -50,7 +51,11 @@ jobs:
         run: |
           SHA=$(git ls-tree HEAD code | awk '$2 == "commit" {print $3}')
           git clone -q https://github.com/BillJr99/Ursinus-Boilerplate-Code.git "$RUNNER_TEMP/cv"
-          if [ -n "$SHA" ] && git -C "$RUNNER_TEMP/cv" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+          if [ -n "$SHA" ]; then
+            if ! git -C "$RUNNER_TEMP/cv" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+              echo "::error::the code submodule points at $SHA, which is not in Ursinus-Boilerplate-Code"
+              exit 1
+            fi
             git -C "$RUNNER_TEMP/cv" checkout -q "$SHA"
           fi
           echo "code-viz at $(git -C "$RUNNER_TEMP/cv" log --oneline -1)"
@@ -82,10 +87,12 @@ jobs:
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "code-viz: rebuild viz/ [skip ci]"
           for try in 1 2 3; do
-            if git pull -q --rebase origin "$GITHUB_REF_NAME" && git push -q origin "HEAD:$GITHUB_REF_NAME"; then
+            git fetch -q origin "$GITHUB_REF_NAME"
+            if git rebase -q "origin/$GITHUB_REF_NAME" && git push -q origin "HEAD:$GITHUB_REF_NAME"; then
               echo "pushed=1" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            git rebase --abort 2>/dev/null || true
             sleep 15
           done
           echo "::error::could not push viz/ after three tries"
