@@ -72,6 +72,7 @@
 
   function makeTerm() {
     const box = el("simterm");
+    if (S.term) { S.term.dispose(); S.term = null; }
     box.innerHTML = "";
     if (!window.Terminal) { S.term = null; box.classList.add("plainterm"); return; }
     box.classList.remove("plainterm");
@@ -122,7 +123,9 @@
     const my = ++S.token, f = SPEEDS[S.speed];
     S.playing = true;
     if (f === 0) return drawInstant(k);
-    for (const ch of st.cmd) { if (my !== S.token) return; S.term.write(ch); await sleep(35 / f); }
+    // Typed like a person: 35 ms a character, but never more than 1.5 s for a whole command at 1x.
+    const perChar = Math.min(35, 1500 / Math.max(1, st.cmd.length)) / f;
+    for (const ch of st.cmd) { if (my !== S.token) return; S.term.write(ch); await sleep(perChar); }
     if (my !== S.token) return;
     S.term.write("\r\n");
     let last = 0;
@@ -222,12 +225,13 @@
 
   window.CVIZ_MODES.register("simulate", {
     async show(ctx) {
-      if (S.id !== ctx.id || !S.sess) {
+      const fresh = S.id !== ctx.id || !S.sess;
+      if (fresh) {
         S.sess = await ctx.fetchJson("sessions/" + encodeURIComponent(ctx.id) + ".json.gz");
-        S.id = ctx.id; S.step = -1;
+        S.id = ctx.id; S.step = -1; S.branch = "";
       }
-      const b = ctx.params.get("branch") || "";
-      if (ctx.pos === undefined || b) S.branch = (S.sess.branches || []).some((x) => x.name === b) ? b : S.branch;
+      // The URL's branch applies when the session opens; a tab switch keeps the branch on screen.
+      if (fresh) { const b = ctx.params.get("branch") || ""; S.branch = (S.sess.branches || []).some((x) => x.name === b) ? b : ""; }
       el("list").hidden = true; el("example").hidden = false;
       el("title").textContent = `${S.sess.title || ctx.id}  ·  simulate`;
       if (ctx.meta.page_url) { el("pagelink").href = ctx.meta.page_url; el("pagelink").textContent = "Open the page this session is on"; }
@@ -240,7 +244,7 @@
       const box = el("simcmd");
       if (box) { box.value = ""; box.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); tryCommand(); } }; }
       const hint = el("simhint"); if (hint) hint.textContent = "";
-      drawInstant(ctx.pos !== undefined ? Math.min(ctx.pos, steps().length - 1) : -1);
+      drawInstant(ctx.pos !== undefined ? Math.max(-1, Math.min(ctx.pos, steps().length - 1)) : -1);
     },
     go(to) {
       if (!S.sess) return;

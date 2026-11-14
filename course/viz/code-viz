@@ -1112,8 +1112,8 @@ The Simulate view shows the session as if it ran live. On the left is a real ter
 moves, `\r` progress bars, `clear` and full-screen programs look as they did; the screen stays from
 one command to the next, with scrollback.
 
-- Next (the `>` button, Space or the right arrow) types the next command at the prompt, then plays
-  its output at the recorded pace. The speed buttons beside the controls set 1x, fast (four times)
+- Next (the `>` button, Space or the right arrow) types the next command at the prompt (35 ms a
+  character, at most 1.5 seconds a command), then plays its output at the recorded pace. The speed buttons beside the controls set 1x, fast (four times)
   or instant; at 1x a pause longer than 2 seconds is shortened to 2. Next while a command is still
   playing finishes it at once.
 - Back (`<`, the left arrow), the slider, Home and `&s=N` rebuild the exact screen at that point at
