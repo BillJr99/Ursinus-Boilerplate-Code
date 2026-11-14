@@ -190,8 +190,18 @@ front matter still parses; models are written into the page as raw HTML, so the 
 Markdown. Check a page after labeling with a YAML parser if it was hand-edited nearby.
 
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
-a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
-is a page to fix, not an example).
+a heading that is just "Key", is not suggested, and neither is a block inside a `<details>` whose
+`<summary>` says so ("Click to reveal a solution to Exercise 3"). Course pages should not print
+solutions; such a block is a page to fix, not an example. (On 2026-11-14 19 CS170 examples labeled
+earlier that day sat in such `<details>` and were unlabeled.)
+
+**Data files from the page.** A Python example that opens a data file by name ("snacks.csv",
+"groceries.txt": a `.txt`, `.csv`, `.tsv`, `.json`, `.dat` or `.log` string in its code or setup)
+gets that file beside it when it runs. A file of that name under `files/` (exactly one) is used;
+otherwise the page's own text block for it: a ``` or ```text/csv/json block that the prose in the
+four lines above names ("Create a file called `poem.txt` ...", "Sample `numbers.txt`:", "Here's the
+file `groceries.txt` again:"), the nearest one above the example, else the nearest below. Nothing is
+invented: an example whose page never shows the file's contents stays unlabeled.
 
 **Site address.** Links and QR codes use `<url>/<repo name>` when the site is on GitHub Pages: the
 repo name comes from the git remote, because a parent repo's `_config.yml` often keeps the
@@ -211,7 +221,9 @@ standard-library cell that prints) or run for its output and figures (`viz=plain
 lines (`%matplotlib inline`, `!pip install`) become comments. `google.colab` is a stand-in whose
 `drive.mount()` does nothing, so a Colab notebook's setup runs; a cell that then reads Drive files
 fails and is not labeled. Cells that import TensorFlow, Keras, PyTorch or transformers are not
-suggested. `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
+suggested. Each notebook example has 90 seconds (its earlier cells run first, and some train or
+search), and a notebook that imports PyTorch anywhere runs its examples in the `python-ml` runner;
+both are recorded in its `viz/notebooks.json` entry (`"timeout": "90"`, `"runner": "python-ml"`). `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
 and adds one line under the paragraph, list item or table that holds the first link to the notebook
 on any page:
 
@@ -272,7 +284,8 @@ code-viz label --notebooks --try --links     # notebook cells (section 4, Notebo
 
 `--notebooks` labels notebook cells instead of page blocks (`--page` then names one notebook, and
 `--viz` limits the kind). `label --try` counts a run as good when it printed, stepped, or drew a
-figure.
+figure. `--report FILE` (with `--try`) appends one JSON line per candidate that did not run cleanly:
+id, page, line, viz, its error and the end of its output, for triage.
 
 ### links
 
@@ -390,9 +403,36 @@ memory addresses are cut out of object reprs, Python runs with `PYTHONHASHSEED=0
 dict-of-set order every time), a
 trace whose content did not change is not rewritten, and `viz/index.json` keeps its
 "built" time when no example changed. A `build --check` on an unchanged repo leaves `git status`
-clean. Two things still churn on purpose: agent outputs (model replies differ on every recording,
-so they are never compared) and any example that prints a time, a date, a random number or a memory
-address (its output looks changed on every build; see the tips in section 13).
+clean. Agent outputs are never compared (model replies differ on every recording).
+
+**Stable traces.** Two consecutive builds of an unchanged repo produce an identical `viz/`, so CI
+commits nothing when nothing changed. Two mechanisms, both inside code-viz (no course page changes):
+
+1. *Repeatable Python.* `tracers/pystubs/sitecustomize.py` loads at interpreter start in every
+   Python example: `random` is seeded (CVIZ_SEED, default 0) and numpy's global generator is seeded
+   right after numpy is imported, so random examples print the same numbers every time; the wall
+   clock (`time.time`, `time.time_ns`, `datetime.now`/`utcnow`/`today`, `date.today`) starts at a
+   fixed instant (CVIZ_EPOCH, default 2026-01-05 09:00 UTC) and then runs at the real rate, so
+   dates and clock times print the same while elapsed times stay real. `time.monotonic` and
+   `time.perf_counter` are untouched (asyncio and timing examples need them). Set CVIZ_REAL_RUN=1
+   to turn this off for a run.
+2. *Settle.* Some values cannot be made repeatable: what a benchmark measures, C stack addresses
+   (the kernel randomizes them in a container), library handles, file dates in `ls -l`. After a
+   build, every example whose new trace differs from the committed one runs once more. If the two
+   new runs agree, the change is real and the new trace is written. If they disagree, the example is
+   volatile (benchmark timings, thread scheduling, C stack addresses), and when its code is the same
+   as the committed trace's (source, setup, interpreter) and its output differs only in such values
+   (numbers, hex addresses, `tmp...` temp names, month and day names) the committed trace is kept:
+   its file is not touched. Steps are not compared for a volatile example, since in threaded code
+   the objects alive at a step vary from run to run. The build prints how many it kept. A volatile
+   example whose code or output text changed is rewritten. `build --no-settle` writes every new trace (to refresh volatile traces on
+   purpose).
+
+The cost is one extra run of the examples that differ, which on an unchanged repo are only the
+volatile ones. A limit: a volatile example whose only real change is a different number in its
+output (a deck edit from `range(5)` to `range(6)` in a timing example) keeps the old trace until
+`build --no-settle`. Expected outputs (`viz/expected`) still record the first run; `build --check`
+reports volatile ones as "output changed", which does not fail the build unless `--strict`.
 
 ## 7. Kinds of visualization
 
@@ -421,7 +461,10 @@ stand-in records the drawing and saves it at `done()` or exit; the ezgraphics st
 `GraphicsWindow` canvas (setFill, setOutline, drawRect/drawRectangle, drawOval, drawLine,
 drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
 growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
-example fails visibly and is not labeled. Figures are deterministic (72 dpi, at most 900 pixels wide,
+example fails visibly and is not labeled. An endless animation (`while True:` drawing frames) is
+stopped after CVIZ_DRAW_MAX drawing calls or moves (default 5000): the canvas is saved as it is then,
+the output says "(code-viz: stopped the drawing after 5000 drawing calls ...)", and the program ends
+normally instead of timing out. Figures are deterministic (72 dpi, at most 900 pixels wide,
 no metadata), at most 8 per example and 600 KB in all (more are counted as `figures_dropped`). Click
 a figure to open it full size. `label` suggests `viz=plain` for Python that uses matplotlib,
 seaborn, turtle or ezgraphics (stepping through it would draw Figure objects), and `runner=python-ml`
@@ -754,6 +797,8 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 | QR button shows no code | the qrcode-generator script did not load (offline before first load); reload online, or use `code-viz qr` images |
 | `docker build` times out | the runner downloads need the network; code-viz builds with `--network host`; check the host's internet |
 | agent example errors "connection refused" | no Ollama answering to `ollama` on `--ollama-network`; see section 12 |
+| CI commits `viz/` after every push although nothing changed | an example varies in a way settle does not mask (text, not numbers): make it print stable text, or accept it |
+| a volatile example keeps an old trace after a deck edit | settle kept it because only numbers changed; run `build --no-settle --page <page>` and commit |
 | `build --check` fails after a deck edit | an example stopped running: fix the block, or `--update-expected` if the change is intended |
 | CI fails with "code-viz changed files outside viz/" | a code-viz bug wrote outside `viz/`; nothing was committed. The log lists the files; fix code-viz, then re-run the workflow |
 | CI committed `viz/` but the site did not change | "Deploy GitHub Pages" did not start (the log warns); run it by hand (Actions, Deploy GitHub Pages, Run workflow) |
@@ -1149,7 +1194,28 @@ def blocks(root, page):
         i += 1
     # code embedded as <script type="syntaxhighlighter"> (activity models, older pages): langs.py
     out = sorted(out + LX.script_blocks(lines, page, LABEL, parse_label, HEADING), key=lambda b: b["start"])
+    sol = solution_lines(lines)
+    for b in out:
+        b["in_solution"] = sol[b["start"]] if b["start"] < len(sol) else False
     return out, lines
+
+
+def solution_lines(lines):
+    """For each line: is it inside a <details> whose <summary> names a solution or answer key ("Click
+    to reveal a solution to Exercise 3")? Such blocks are never labeled (section 4)."""
+    out, stack = [], []
+    for line in lines:
+        low = line.lower()
+        for _ in range(low.count("<details")):
+            stack.append(False)
+        m = re.search(r"<summary[^>]*>(.*?)(</summary>|$)", line, re.I)
+        if m and stack:
+            stack[-1] = bool(SOLUTION.search(re.sub(r"<[^>]+>", "", m.group(1))))
+        out.append(any(stack))
+        for _ in range(low.count("</details>")):
+            if stack:
+                stack.pop()
+    return out
 
 
 def looks_lambda(code):
@@ -1283,8 +1349,8 @@ def suggest(b):
 
 def _suggest_base(b):
     code, lang = b["code"], b["lang"]
-    if SOLUTION.search(b.get("heading") or ""):
-        return None     # under a Solution / Answer key heading: never labeled (section 4)
+    if SOLUTION.search(b.get("heading") or "") or b.get("in_solution"):
+        return None     # under a Solution / Answer key heading, or in a "reveal a solution" <details>: never labeled
     n = len([l for l in code.splitlines() if l.strip()])
     if lang == "python" and n >= 3:
         import ast
@@ -1449,6 +1515,48 @@ EXT = {"python": "py", "scheme": "scm", "lambda": "lam", "c": "c", "cpp": "cpp",
 EXT.update(LX.EXT)
 
 
+DATA_NAME = re.compile(r"""['"]([\w.-]+\.(?:txt|csv|tsv|json|dat|log))['"]""")
+DATA_LANGS = {"", "text", "txt", "plain", "plaintext", "none", "csv", "tsv", "json", "output"}
+
+
+def data_files(b, root, lookup=None):
+    """Data files an example opens ("snacks.csv", "groceries.txt") that are not in the repo, taken
+    from the page itself: a text block (``` or ```text, csv, json) that the prose just above it names
+    ("Create a file called `poem.txt` ...", "Sample `numbers.txt`:", "Here's the file groceries.txt
+    again:"), the nearest one above the example, else the nearest below. A file in the example's own
+    folder or under files/ with that name wins over the page. Returns {name: text}."""
+    if not b.get("page", "").endswith(".md"):
+        return {}
+    code = b["code"] + "\n" + ((b.get("label") or {}).get("setup_src") or "")
+    lab = b.get("label") or {}
+    for sid in [x for x in (lab.get("setup") or "").split(",") if x]:
+        sb = (lookup or {}).get(sid)
+        if sb:
+            code += "\n" + sb["code"]
+    names = sorted(set(DATA_NAME.findall(code)))
+    if not names:
+        return {}
+    bs, lines = blocks(root, b["page"])
+    out = {}
+    for name in names:
+        found = [os.path.join(dp, name) for dp, _, fn in os.walk(os.path.join(root, "files")) if name in fn]
+        if len(found) == 1:
+            out[name] = open(found[0], encoding="utf-8", errors="replace").read()
+            continue
+        cands = []
+        for d in bs:
+            if d["lang"] not in DATA_LANGS or d.get("html"):
+                continue
+            prose = "\n".join(lines[max(0, d["start"] - 4):d["start"]])
+            if re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", prose):
+                cands.append(d)
+        if cands:
+            above = [d for d in cands if d["start"] < b["start"]]
+            pick = above[-1] if above else cands[0]
+            out[name] = pick["code"].rstrip("\n") + "\n"
+    return out
+
+
 def job_for(b, root, src_dir, lookup=None):
     lab = b["label"]
     lang = LANG_ALIASES.get(lab.get("lang") or b["lang"], lab.get("lang") or b["lang"])
@@ -1461,6 +1569,10 @@ def job_for(b, root, src_dir, lookup=None):
     if lang == "scheme":
         code = code + "\n"
     open(os.path.join(src_dir, fname), "w", encoding="utf-8").write(code)
+    if lang == "python":
+        # data files the program opens, written beside it from the page's own text blocks (section 4)
+        for name, text in data_files(b, root, lookup).items():
+            open(os.path.join(src_dir, lab["id"], name), "w", encoding="utf-8").write(text)
     # model calls on a CPU are slow: agent examples get five minutes unless the label says otherwise
     job = {"id": lab["id"], "viz": viz, "lang": lang, "file": fname, "timeout": int(lab.get("timeout", 300 if viz == "agent" else 20)),
            "max_steps": int(lab.get("max_steps", 800)), "page": b["page"], "line": b["start"] + 1}
@@ -1689,6 +1801,23 @@ def cmd_links(a):
     return 1 if (a.check and missing) else 0
 
 
+def report_failures(a, cands, keep, traces):
+    """label --try --report FILE: append the candidates that did not run cleanly, with what they
+    printed and their error, as JSON lines (for triage; section 5, label)."""
+    if not getattr(a, "report", None):
+        return
+    kept = {b["label"]["id"] for b in keep}
+    with open(a.report, "a", encoding="utf-8") as f:
+        for b in cands:
+            vid = b["label"]["id"]
+            if vid in kept:
+                continue
+            t = traces.get(vid, {})
+            f.write(json.dumps({"id": vid, "page": b["page"], "line": b["start"] + 1, "viz": b["label"].get("viz"),
+                                "error": (t.get("error") or "")[:400], "stdout": (t.get("stdout") or "")[-400:],
+                                "steps": len(t.get("steps") or []), "figures": len(t.get("figures") or [])}) + "\n")
+
+
 def label_notebooks(a, root, info, docker):
     """label --notebooks: list the notebook cells that print or draw in viz/notebooks.json (with --try,
     only those that run cleanly after the earlier cells), then optionally add the page links."""
@@ -1706,7 +1835,10 @@ def label_notebooks(a, root, info, docker):
             vid = f"{info['course']}-nb-{slug(nb)}-{k}"
             if k in done or not v or vid in have or (a.viz and v != a.viz):
                 continue
-            cands.append(NB.block(nb, cells, k, {"id": vid, "viz": v}))
+            lab = {"id": vid, "viz": v, "timeout": NB.TIMEOUT}
+            if NB.notebook_runner(cells):
+                lab["runner"] = NB.notebook_runner(cells)
+            cands.append(NB.block(nb, cells, k, lab))
     keep = cands
     if docker and cands:
         src = tempfile.mkdtemp(prefix="code-viz-try-")
@@ -1718,9 +1850,11 @@ def label_notebooks(a, root, info, docker):
             t = traces.get(b["label"]["id"], {})
             return not t.get("error") and bool((t.get("stdout") or "").strip() or t.get("figures") or t.get("steps"))
         keep = [b for b in cands if good(b)]
+        report_failures(a, cands, keep, traces)
     for b in keep:
         n = listed.setdefault(b["notebook"], {"file": b["notebook"], "examples": []})
-        n["examples"].append({"id": b["label"]["id"], "cell": b["cell"], "viz": b["label"]["viz"]})
+        n["examples"].append({k: v for k, v in {"id": b["label"]["id"], "cell": b["cell"], "viz": b["label"]["viz"],
+                                                 "runner": b["label"].get("runner"), "timeout": b["label"].get("timeout")}.items() if v})
     idx["notebooks"] = list(listed.values())
     NB.save_index(root, idx)
     per = {}
@@ -1813,6 +1947,7 @@ def cmd_label(a):
                         return bool(t.get("steps"))
                     return True
                 keep = [b for b in cands if good(b)]
+                report_failures(a, cands, keep, traces)
                 kept = {b["label"]["id"] for b in keep} | {i for i, x in block_lookup(root).items()}
                 keep = [b for b in keep if all(x in kept for x in (b["label"].get("setup") or "").split(",") if x)]
                 shutil.rmtree(src, ignore_errors=True)
@@ -1878,6 +2013,80 @@ def save_trace(path, t):
     if os.path.exists(path):
         os.remove(path)
     return True
+
+
+VOLATILE = [(re.compile(r"0x[0-9a-fA-F]+"), "0x#"),                     # addresses, handles
+            (re.compile(r"\btmp[A-Za-z0-9_]{6,10}\b"), "tmp#"),             # tempfile names
+            (re.compile(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b"), "Mon"),
+            (re.compile(r"\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b"), "Day"),
+            (re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"), "9")]          # every number
+
+
+def trace_text(t, j):
+    """A trace exactly as write_site would store it (for comparing a new run with the committed one)."""
+    import copy
+    t = copy.deepcopy(t)
+    t.update({"id": j["id"], "page": j["page"], "line": j["line"], "viz": j["viz"], "lang": j["lang"]})
+    t.setdefault("kind", j["viz"])
+    return json.dumps(compact(t), separators=(",", ":"), sort_keys=True)
+
+
+def shape(text):
+    """A stored trace with what varies between runs (numbers, addresses, temp names, month and day
+    names) replaced, so two runs that differ only there compare equal (section 6, Stable traces)."""
+    for rx, rep_ in VOLATILE:
+        text = rx.sub(rep_, text)
+    return text
+
+
+def stored_text(root, vid):
+    p = os.path.join(root, "viz", "traces", vid + ".json.gz")
+    try:
+        with gzip.open(p, "rb") as fh:
+            return fh.read().decode()
+    except OSError:
+        return None
+
+
+def same_example(new, old):
+    """Is a volatile example's new trace the committed one up to run-to-run values? Its code is the
+    same (source, setup, interpreter), it fails or succeeds the same way, it drew as many figures,
+    and its output is the same once numbers, addresses, temp names and dates are masked. The steps
+    are not compared: in threaded or timing examples the objects alive at a step vary between runs."""
+    for k in ("source", "setup", "interp", "language", "kind"):
+        if new.get(k) != old.get(k):
+            return False
+    if bool(new.get("error")) != bool(old.get("error")) or len(new.get("figures") or []) != len(old.get("figures") or []):
+        return False
+    return shape(new.get("stdout") or "") == shape(old.get("stdout") or "")
+
+
+def settle(root, jobs, traces, docker, src):
+    """Keep the committed trace of an example whose output varies from run to run (section 6).
+
+    For each example whose new trace differs from the committed one, run it once more. If the two new
+    runs agree, the example is repeatable and the change is real: the new trace is written. If they
+    disagree, the example is volatile (benchmark timings, thread scheduling, C stack addresses,
+    library handles, ls dates, unseeded randomness in C); then, when its code is unchanged and its
+    output differs only in what varies (same_example()), the committed trace is kept, so a build with
+    nothing changed rewrites nothing. A volatile example whose code or output text changed is
+    rewritten."""
+    by = {j["id"]: j for j in jobs}
+    differ = [vid for vid, j in by.items() if vid in traces and stored_text(root, vid) is not None
+              and trace_text(traces[vid], j) != stored_text(root, vid)
+              and not (traces[vid].get("error") and not traces[vid].get("steps") and not traces[vid].get("stdout"))]
+    if not differ:
+        return traces, []
+    print(f"  {len(differ)} trace(s) differ from the committed ones; running them again to tell real changes from run-to-run noise")
+    again = run_jobs([by[v] for v in differ], docker, src)
+    kept = []
+    for vid in differ:
+        first, second = trace_text(traces[vid], by[vid]), trace_text(again.get(vid, {}), by[vid])
+        old = stored_text(root, vid)
+        if first != second and same_example(json.loads(first), json.loads(old)):
+            traces[vid] = dict(json.loads(old), _kept=True)
+            kept.append(vid)
+    return traces, kept
 
 
 def norm(text):
@@ -1990,7 +2199,8 @@ def write_site(root, info, traces, jobs, a):
         t.setdefault("kind", j["viz"])
         if t.get("error") and not t.get("steps") and not t.get("stdout"):
             failed.append((j["id"], t["error"]))
-        save_trace(os.path.join(site, "traces", j["id"] + ".json"), t)
+        if not t.pop("_kept", False):   # settle() kept the committed trace: leave its file untouched
+            save_trace(os.path.join(site, "traces", j["id"] + ".json"), t)
         exp = os.path.join(site, "expected", j["id"] + ".out")
         out = t.get("stdout") or ""
         if os.path.exists(exp) and not a.update_expected:
@@ -2057,13 +2267,17 @@ def cmd_build(a):
         return 0
     print(f"building {len(jobs)} example(s) for {info['course']}")
     docker = Docker(a.host, keep=a.keep_images, ollama_network=a.ollama_network)
+    kept = []
     try:
         traces = run_jobs(jobs, docker, src)
+        if not getattr(a, "no_settle", False):
+            traces, kept = settle(root, jobs, traces, docker, src)   # stable traces (section 6)
     finally:
         docker.cleanup()
         shutil.rmtree(src, ignore_errors=True)
     changed, failed = write_site(root, info, traces, jobs, a)
-    print(f"wrote {len(jobs)} trace(s) to viz/; failed {len(failed)}; output changed {len(changed)}")
+    print(f"wrote {len(jobs)} trace(s) to viz/; failed {len(failed)}; output changed {len(changed)}"
+          + (f"; kept {len(kept)} committed trace(s) that differ only in run-to-run values" if kept else ""))
     for vid, err in failed[:40]:
         print(f"  failed {vid}: {str(err)[:140]}")
     for vid in changed[:40]:
@@ -2302,6 +2516,7 @@ def main():
     l.add_argument("--links", action="store_true", help="add a Visualize link under each labeled block")
     l.add_argument("--agents", action="store_true", help="also label agent examples (recorded, not re-run)")
     l.add_argument("--ollama-network", help="Docker network with an Ollama container, for --try on agent examples")
+    l.add_argument("--report", help="with --try: append the candidates that did not run cleanly (id, page, error) to this JSON-lines file")
     l.add_argument("--notebooks", action="store_true", help="label cells of the notebooks under files/ (viz/notebooks.json) instead of pages")
     l.set_defaults(fn=cmd_label)
     r = sub.add_parser("run", help="run one example (id or file) and write its trace")
@@ -2311,6 +2526,7 @@ def main():
     b.add_argument("--page"); b.add_argument("--lang"); b.add_argument("--check", action="store_true")
     b.add_argument("--strict", action="store_true", help="with --check, also fail when an output changed")
     b.add_argument("--update-expected", action="store_true"); b.add_argument("--record-agents", action="store_true")
+    b.add_argument("--no-settle", action="store_true", help="write every new trace, even when it differs from the committed one only in run-to-run values")
     b.add_argument("--manifest-only", action="store_true", help="only the grammars and automata in viz/manifest.json")
     b.add_argument("--ollama-network"); b.set_defaults(fn=cmd_build)
     k = sub.add_parser("links", help="add the missing Visualize link under every labeled block")

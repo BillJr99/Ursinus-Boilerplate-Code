@@ -191,8 +191,18 @@ front matter still parses; models are written into the page as raw HTML, so the 
 Markdown. Check a page after labeling with a YAML parser if it was hand-edited nearby.
 
 **Solutions are never labeled.** A block under a heading containing "Solution" or "Answer key", or
-a heading that is just "Key", is not suggested (course pages should not print solutions; such a block
-is a page to fix, not an example).
+a heading that is just "Key", is not suggested, and neither is a block inside a `<details>` whose
+`<summary>` says so ("Click to reveal a solution to Exercise 3"). Course pages should not print
+solutions; such a block is a page to fix, not an example. (On 2026-11-14 19 CS170 examples labeled
+earlier that day sat in such `<details>` and were unlabeled.)
+
+**Data files from the page.** A Python example that opens a data file by name ("snacks.csv",
+"groceries.txt": a `.txt`, `.csv`, `.tsv`, `.json`, `.dat` or `.log` string in its code or setup)
+gets that file beside it when it runs. A file of that name under `files/` (exactly one) is used;
+otherwise the page's own text block for it: a ``` or ```text/csv/json block that the prose in the
+four lines above names ("Create a file called `poem.txt` ...", "Sample `numbers.txt`:", "Here's the
+file `groceries.txt` again:"), the nearest one above the example, else the nearest below. Nothing is
+invented: an example whose page never shows the file's contents stays unlabeled.
 
 **Site address.** Links and QR codes use `<url>/<repo name>` when the site is on GitHub Pages: the
 repo name comes from the git remote, because a parent repo's `_config.yml` often keeps the
@@ -212,7 +222,9 @@ standard-library cell that prints) or run for its output and figures (`viz=plain
 lines (`%matplotlib inline`, `!pip install`) become comments. `google.colab` is a stand-in whose
 `drive.mount()` does nothing, so a Colab notebook's setup runs; a cell that then reads Drive files
 fails and is not labeled. Cells that import TensorFlow, Keras, PyTorch or transformers are not
-suggested. `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
+suggested. Each notebook example has 90 seconds (its earlier cells run first, and some train or
+search), and a notebook that imports PyTorch anywhere runs its examples in the `python-ml` runner;
+both are recorded in its `viz/notebooks.json` entry (`"timeout": "90"`, `"runner": "python-ml"`). `label --notebooks --try --links` labels the cells that print or draw and run cleanly,
 and adds one line under the paragraph, list item or table that holds the first link to the notebook
 on any page:
 
@@ -273,7 +285,8 @@ code-viz label --notebooks --try --links     # notebook cells (section 4, Notebo
 
 `--notebooks` labels notebook cells instead of page blocks (`--page` then names one notebook, and
 `--viz` limits the kind). `label --try` counts a run as good when it printed, stepped, or drew a
-figure.
+figure. `--report FILE` (with `--try`) appends one JSON line per candidate that did not run cleanly:
+id, page, line, viz, its error and the end of its output, for triage.
 
 ### links
 
@@ -391,9 +404,36 @@ memory addresses are cut out of object reprs, Python runs with `PYTHONHASHSEED=0
 dict-of-set order every time), a
 trace whose content did not change is not rewritten, and `viz/index.json` keeps its
 "built" time when no example changed. A `build --check` on an unchanged repo leaves `git status`
-clean. Two things still churn on purpose: agent outputs (model replies differ on every recording,
-so they are never compared) and any example that prints a time, a date, a random number or a memory
-address (its output looks changed on every build; see the tips in section 13).
+clean. Agent outputs are never compared (model replies differ on every recording).
+
+**Stable traces.** Two consecutive builds of an unchanged repo produce an identical `viz/`, so CI
+commits nothing when nothing changed. Two mechanisms, both inside code-viz (no course page changes):
+
+1. *Repeatable Python.* `tracers/pystubs/sitecustomize.py` loads at interpreter start in every
+   Python example: `random` is seeded (CVIZ_SEED, default 0) and numpy's global generator is seeded
+   right after numpy is imported, so random examples print the same numbers every time; the wall
+   clock (`time.time`, `time.time_ns`, `datetime.now`/`utcnow`/`today`, `date.today`) starts at a
+   fixed instant (CVIZ_EPOCH, default 2026-01-05 09:00 UTC) and then runs at the real rate, so
+   dates and clock times print the same while elapsed times stay real. `time.monotonic` and
+   `time.perf_counter` are untouched (asyncio and timing examples need them). Set CVIZ_REAL_RUN=1
+   to turn this off for a run.
+2. *Settle.* Some values cannot be made repeatable: what a benchmark measures, C stack addresses
+   (the kernel randomizes them in a container), library handles, file dates in `ls -l`. After a
+   build, every example whose new trace differs from the committed one runs once more. If the two
+   new runs agree, the change is real and the new trace is written. If they disagree, the example is
+   volatile (benchmark timings, thread scheduling, C stack addresses), and when its code is the same
+   as the committed trace's (source, setup, interpreter) and its output differs only in such values
+   (numbers, hex addresses, `tmp...` temp names, month and day names) the committed trace is kept:
+   its file is not touched. Steps are not compared for a volatile example, since in threaded code
+   the objects alive at a step vary from run to run. The build prints how many it kept. A volatile
+   example whose code or output text changed is rewritten. `build --no-settle` writes every new trace (to refresh volatile traces on
+   purpose).
+
+The cost is one extra run of the examples that differ, which on an unchanged repo are only the
+volatile ones. A limit: a volatile example whose only real change is a different number in its
+output (a deck edit from `range(5)` to `range(6)` in a timing example) keeps the old trace until
+`build --no-settle`. Expected outputs (`viz/expected`) still record the first run; `build --check`
+reports volatile ones as "output changed", which does not fail the build unless `--strict`.
 
 ## 7. Kinds of visualization
 
@@ -422,7 +462,10 @@ stand-in records the drawing and saves it at `done()` or exit; the ezgraphics st
 `GraphicsWindow` canvas (setFill, setOutline, drawRect/drawRectangle, drawOval, drawLine,
 drawPolygon, drawText, drawArc) and saves it at `wait()`, `pause()` (one frame each) or exit, with y
 growing downward as in ezgraphics. A call the stand-ins do not support raises AttributeError, so the
-example fails visibly and is not labeled. Figures are deterministic (72 dpi, at most 900 pixels wide,
+example fails visibly and is not labeled. An endless animation (`while True:` drawing frames) is
+stopped after CVIZ_DRAW_MAX drawing calls or moves (default 5000): the canvas is saved as it is then,
+the output says "(code-viz: stopped the drawing after 5000 drawing calls ...)", and the program ends
+normally instead of timing out. Figures are deterministic (72 dpi, at most 900 pixels wide,
 no metadata), at most 8 per example and 600 KB in all (more are counted as `figures_dropped`). Click
 a figure to open it full size. `label` suggests `viz=plain` for Python that uses matplotlib,
 seaborn, turtle or ezgraphics (stepping through it would draw Figure objects), and `runner=python-ml`
@@ -755,6 +798,8 @@ permissions). Both are safe in a repo with no examples. The added step, as it is
 | QR button shows no code | the qrcode-generator script did not load (offline before first load); reload online, or use `code-viz qr` images |
 | `docker build` times out | the runner downloads need the network; code-viz builds with `--network host`; check the host's internet |
 | agent example errors "connection refused" | no Ollama answering to `ollama` on `--ollama-network`; see section 12 |
+| CI commits `viz/` after every push although nothing changed | an example varies in a way settle does not mask (text, not numbers): make it print stable text, or accept it |
+| a volatile example keeps an old trace after a deck edit | settle kept it because only numbers changed; run `build --no-settle --page <page>` and commit |
 | `build --check` fails after a deck edit | an example stopped running: fix the block, or `--update-expected` if the change is intended |
 | CI fails with "code-viz changed files outside viz/" | a code-viz bug wrote outside `viz/`; nothing was committed. The log lists the files; fix code-viz, then re-run the workflow |
 | CI committed `viz/` but the site did not change | "Deploy GitHub Pages" did not start (the log warns); run it by hand (Actions, Deploy GitHub Pages, Run workflow) |

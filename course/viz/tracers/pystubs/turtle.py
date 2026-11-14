@@ -12,9 +12,15 @@ dot, penup/pu/up, pendown/pd/down, pencolor, fillcolor, color, pensize/width, be
 write, position/pos, xcor, ycor, heading, isdown, and as no-ops speed, shape, showturtle/st,
 hideturtle/ht, tracer, update, delay, bgpic, title, setup, Screen().bgcolor (kept), screensize.
 Anything else raises AttributeError, so an example using it fails visibly instead of drawing wrong.
+An endless drawing loop is stopped after CVIZ_DRAW_MAX moves (default 5000): the drawing so far is
+saved, a note is printed, and the program ends normally.
 """
 import atexit
 import math
+import os
+import sys
+
+_calls = [0]        # moves so far: an endless drawing loop is stopped after CVIZ_DRAW_MAX (5000)
 
 _drawings = []      # every Turtle's segments: (xs, ys, color, width)
 _fills = []         # (xs, ys, color)
@@ -32,6 +38,11 @@ class Turtle:
         _all.append(self)
 
     def _move(self, x, y):
+        _calls[0] += 1
+        if _calls[0] >= int(os.environ.get("CVIZ_DRAW_MAX", "5000")):
+            done()
+            print("(code-viz: stopped the drawing after %d moves; the figure shows it then)" % _calls[0])
+            sys.exit(0)
         if self._down:
             _drawings.append(([self._x, x], [self._y, y], self._pc, self._w))
         if self._fill is not None:

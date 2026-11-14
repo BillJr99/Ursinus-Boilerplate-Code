@@ -8,12 +8,28 @@ GraphicsWindow` in an example loads this file. Each GraphicsWindow records what 
 canvas and, at win.wait(), win.close() or when the program ends, saves it as one figure through
 cviz_mplbackend.save_figure (win.pause() saves a figure too, so an animation shows as frames, up to
 the figure cap). Coordinates are canvas pixels with y growing downward, as in ezgraphics.
-Supported on the canvas: setFill, setOutline, setColor, setLineWidth, setBackground, setTextFont
+An endless animation is stopped after CVIZ_DRAW_MAX drawing calls (default 5000): every window is
+saved as it is then, a note is printed, and the program ends normally. Supported on the canvas: setFill, setOutline, setColor, setLineWidth, setBackground, setTextFont
 (kept but not applied), drawRect/drawRectangle, drawOval, drawLine, drawPoint, drawPolygon,
 drawText, drawArc, clear, width, height. On the window: canvas, setTitle, wait, pause, close,
 isValid. Anything else raises AttributeError.
 """
 import atexit
+import os
+import sys
+
+_calls = [0]    # drawing calls so far, across windows (an endless animation is stopped, see _stop)
+
+
+def _stop():
+    """An endless animation (`while True:` drawing frames) never reaches win.wait(): after
+    CVIZ_DRAW_MAX drawing calls (default 5000) save every window as it is now and end the program
+    normally, so the example shows its canvas at that point instead of timing out."""
+    for w in _windows:
+        if w._open:
+            w.wait()
+    print("(code-viz: stopped the drawing after %d drawing calls; the figure shows the canvas then)" % _calls[0])
+    sys.exit(0)
 
 
 def _c(c):
@@ -60,6 +76,9 @@ class GraphicsCanvas:
 
     def _add(self, kind, *args):
         self.ops.append((kind, args, self.fill, self.outline, self.lw))
+        _calls[0] += 1
+        if _calls[0] >= int(os.environ.get("CVIZ_DRAW_MAX", "5000")):
+            _stop()
 
     def drawRect(self, x, y, w, h):
         self._add("rect", x, y, w, h)

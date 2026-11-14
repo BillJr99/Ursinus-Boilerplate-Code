@@ -1,6 +1,6 @@
 # code-viz runner "python" (runners/python/Dockerfile).
 # Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
-# Python 3.12 with numpy, pandas, scikit-learn, scipy, matplotlib, seaborn, SQLAlchemy (with the
+# Python 3.12 with numpy, pandas, scikit-learn, scipy, matplotlib, seaborn, imageio, hmmlearn, SQLAlchemy (with the
 # standard library's SQLite) and requests, for viz=env (pytrace.py), viz=lambda (lambdatrace.py) and
 # plain Python examples. Figures are drawn headlessly by tracers/cviz_mplbackend.py, and turtle,
 # ezgraphics and google.colab come from the stand-ins in tracers/pystubs (section 7, Figures);
@@ -14,6 +14,6 @@
 # Change the pinned versions here; the new hash makes code-viz rebuild.
 FROM python:3.12-slim
 RUN pip install --no-cache-dir numpy==2.1.3 pandas==2.2.3 scikit-learn==1.5.2 matplotlib==3.9.2 requests==2.32.3 \
-    scipy==1.14.1 seaborn==0.13.2 SQLAlchemy==2.0.36
+    scipy==1.14.1 seaborn==0.13.2 SQLAlchemy==2.0.36 imageio==2.36.1 hmmlearn==0.3.3
 ENV MPLBACKEND=Agg PYTHONDONTWRITEBYTECODE=1
 WORKDIR /work

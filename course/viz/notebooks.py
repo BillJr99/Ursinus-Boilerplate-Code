@@ -5,7 +5,11 @@ Full manual: the header of code-viz (`code-viz readme`, or README.md), section 4
 A notebook cannot carry `<!-- run: -->` labels, so its examples are listed in viz/notebooks.json:
 
     {"notebooks": [{"file": "files/lab3/regression.ipynb",
-                    "examples": [{"id": "cs477-nb-regression-4", "cell": 4, "viz": "plain"}]}]}
+                    "examples": [{"id": "cs477-nb-regression-4", "cell": 4, "viz": "plain",
+                                  "timeout": "90", "runner": "python-ml"}]}]}
+
+`timeout` (seconds, 90 for every notebook example) and `runner` (python-ml when the notebook imports
+PyTorch anywhere) are optional.
 
 `cell` counts code cells only, from 1, in notebook order (markdown cells are not counted), so the id
 stays the same when prose cells change. A page links the notebook when the file name appears on a
@@ -130,8 +134,18 @@ def blocks(root, only=None):
         cells = code_cells(root, n["file"])
         for e in n.get("examples", []):
             if 1 <= e["cell"] <= len(cells):
-                out.append(block(n["file"], cells, e["cell"], {"id": e["id"], "viz": e.get("viz", "plain")}))
+                lab = {"id": e["id"], "viz": e.get("viz", "plain")}
+                lab.update({k: e[k] for k in ("runner", "timeout") if e.get(k)})
+                out.append(block(n["file"], cells, e["cell"], lab))
     return out
+
+
+TIMEOUT = "90"   # seconds per notebook example: the earlier cells run first, and some train or search
+
+
+def notebook_runner(cells):
+    """python-ml for a notebook that imports PyTorch anywhere (its later cells need it), else None."""
+    return "python-ml" if any(re.search(r"^\s*(import|from)\s+(torch|torchvision)\b", c, re.M) for c in cells) else None
 
 
 def suggest(code):
