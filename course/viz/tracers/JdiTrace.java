@@ -101,6 +101,10 @@ public class JdiTrace {
             }
             if (!done) es.resume();
         }
+        while (p.isAlive()) {     // keep reading, so a program that prints a lot after the last step cannot fill the pipe
+            drain();
+            Thread.sleep(20);
+        }
         int code = p.waitFor();
         drain();
         drainAll(pout, OUT);

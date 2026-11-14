@@ -91,9 +91,10 @@ def java_prepare(code):
             emit(lines[i], i)
         pub = re.search(r"^\s*public\s+(?:(?:final|abstract)\s+)*(?:class|interface|enum|record)\s+(\w+)", code, re.M)
         name = pub.group(1) if pub else "Main"
-        # the class holding main: the last declaration that starts before "static void main"
+        # the class holding main: the last top-level (unindented) declaration before "static void main"
         mpos = code.find("static void main")
-        before = [m.group(2) for m in JAVA_DECL.finditer(code) if m.start() < mpos] if mpos >= 0 else []
+        top = [m for m in JAVA_DECL.finditer(code) if not code[m.start():m.end()].startswith((" ", "\t"))]
+        before = [m.group(2) for m in top if m.start() < mpos] if mpos >= 0 else []
         main = before[-1] if before else name
     elif JAVA_METHOD.search(code):
         emit("public class Main {")
@@ -156,7 +157,7 @@ def java(job, sh, SRC, T):
 def walk_classes(d):
     for dp, _, fn in os.walk(d):
         for f in fn:
-            if f.endswith(".class") and "$" not in f:
+            if f.endswith(".class") and "$$" not in f and "$Lambda" not in f:   # inner classes (Outer$Node) are the example's own
                 yield os.path.relpath(os.path.join(dp, f), d)
 
 

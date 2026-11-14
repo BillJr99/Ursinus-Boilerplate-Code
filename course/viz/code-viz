@@ -1323,7 +1323,9 @@ def job_for(b, root, src_dir, lookup=None):
             raise ValueError(f"{lab['id']}: setup= works only for Python, SQL and VHDL blocks")
         chain = setup_chain([x for x in lab["setup"].split(",") if x], lookup or block_lookup(root))
         sfile = f"{lab['id']}/setup.{EXT.get(lang, 'txt')}"
-        open(os.path.join(src_dir, sfile), "w", encoding="utf-8").write("\n\n".join(x["code"] for x in chain) + "\n")
+        # SQL blocks may omit their last ";" (sqlite runs it anyway); add it so joined blocks stay separate
+        open(os.path.join(src_dir, sfile), "w", encoding="utf-8").write("\n\n".join(
+            x["code"] + (";" if lang == "sql" and not x["code"].rstrip().endswith(";") else "") for x in chain) + "\n")
         job["setup"] = sfile
         job["setup_ids"] = [x["label"]["id"] for x in chain]
     if lang == "mini" and lab.get("interp"):
@@ -1743,7 +1745,8 @@ def cmd_unlabel(a):
             write_page(root, page, lines)
     site = os.path.join(root, "viz")
     for vid in gone:
-        for p in (os.path.join(site, "traces", vid + ".json"), os.path.join(site, "expected", vid + ".out")):
+        for p in (os.path.join(site, "traces", vid + ".json"), os.path.join(site, "traces", vid + ".json.gz"),
+                  os.path.join(site, "expected", vid + ".out")):
             if os.path.exists(p):
                 os.remove(p)
     ip = os.path.join(site, "index.json")

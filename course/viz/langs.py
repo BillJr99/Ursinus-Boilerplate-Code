@@ -182,9 +182,10 @@ def setup_deps(b, earlier):
             # the block that creates the table, and every later block above b that changes it
             first = makers[-1]
             for x in same:
+                body = re.sub(r"/\*.*?\*/", " ", re.sub(r"--[^\n]*", "", x["code"]), flags=re.S)
                 if x["start"] >= first["start"] and id(x) not in seen and \
-                        (name in _sql_refs(x["code"])[1] or re.search(rf"\b(INTO|UPDATE|FROM)\s+[\"`\[]?{name}\b", x["code"], re.I)) \
-                        and re.search(r"(?i)\b(create|insert|update|delete|alter|replace)\b", x["code"]):
+                        (name in _sql_refs(x["code"])[1] or re.search(rf"\b(INTO|UPDATE|FROM|TABLE)\s+[\"`\[]?{name}\b", body, re.I)) \
+                        and re.search(r"(?i)\b(create|insert|update|delete|alter|drop|replace)\b", body):
                     seen.add(id(x))
                     deps.append(x)
                     more, _ = _sql_refs(x["code"])
