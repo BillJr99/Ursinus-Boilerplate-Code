@@ -713,9 +713,13 @@ Containers run where Docker is: locally (a laptop with Docker, or GitHub Actions
 machine over SSH with `--host user@machine` (or `CODE_VIZ_HOST`), using `sudo -n docker` there.
 Every example runs in a throwaway container from its runner image: no network (the agents runner
 reaches only the Ollama network), one CPU, 1 GB of memory, 256 processes, a time limit per example
-and per batch, and the container is removed afterwards. Runner images are removed at the end of
-each command unless `--keep-images`. Runner images are built with `--network host` because
-downloads timed out on a default bridge network.
+and per batch, and the container is removed afterwards. A runner image is removed at the end of the
+command that built it unless `--keep-images`; an image the command found already there is left for
+whoever built it. Before every batch the runner image is checked and built again if it is missing,
+so two code-viz runs on one host at once (Bill's two-slot minipc, `bill-minipc-slot`) do not break
+each other: the first one to finish may remove a shared image, and the other rebuilds it (on
+2026-11-14 a CS374 build lost 60 examples that way before this). Runner images are built with
+`--network host` because downloads timed out on a default bridge network.
 
 On Bill's machines the containers run on minipc (`--host bill@10.0.0.26`, or `CODE_VIZ_HOST`),
 never on minipc2; staging folders move to `~/scratch/` when done.
@@ -1460,6 +1464,7 @@ class Docker:
         self.ollama_network = ollama_network
         self.built = {}
         self.staged = []        # staging folders on the Docker host, moved to ~/scratch at cleanup
+        self.mine = set()       # images this run built (cleanup removes only these)
 
     def _cmd(self, args):
         d = (["sudo", "-n", "docker"] if self.sudo else ["docker"]) + args
@@ -1498,11 +1503,13 @@ class Docker:
                             f"mkdir -p ~/scratch/code-viz && mv {shlex.quote(remote)} ~/scratch/code-viz/ 2>/dev/null || true"])
 
     def image(self, runner):
-        if runner in self.built:
-            return self.built[runner]
+        # Checked before every batch, not cached: another code-viz run on the same host (two slots
+        # run at once) may remove an image it built while this run is between batches; then it is
+        # built again here instead of the batch failing with "Unable to find image" (section 15).
         df = os.path.join(RUNNERS, runner, "Dockerfile")
         tag = f"code-viz-{runner}:" + hashlib.sha256(open(df, "rb").read()).hexdigest()[:12]
         if self.sh(["image", "inspect", tag], check=False).returncode != 0:
+            self.mine.add(tag)      # built by this run: the only images cleanup removes
             ctx = self.remote_dir(os.path.join(RUNNERS, runner), f"runner-{runner}")
             print(f"  building runner image {tag} ...", flush=True)
             # --network host: on minipc, downloads during docker build time out on the default bridge
@@ -1562,7 +1569,9 @@ class Docker:
         self.staged = []
         if self.keep:
             return
-        for tag in self.built.values():
+        # Only images this run built; one another run built or still uses stays (a running
+        # container keeps its image: rmi then fails and is ignored).
+        for tag in sorted(self.mine):
             self.sh(["rmi", tag], check=False)
 
 

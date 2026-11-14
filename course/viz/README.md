@@ -714,9 +714,13 @@ Containers run where Docker is: locally (a laptop with Docker, or GitHub Actions
 machine over SSH with `--host user@machine` (or `CODE_VIZ_HOST`), using `sudo -n docker` there.
 Every example runs in a throwaway container from its runner image: no network (the agents runner
 reaches only the Ollama network), one CPU, 1 GB of memory, 256 processes, a time limit per example
-and per batch, and the container is removed afterwards. Runner images are removed at the end of
-each command unless `--keep-images`. Runner images are built with `--network host` because
-downloads timed out on a default bridge network.
+and per batch, and the container is removed afterwards. A runner image is removed at the end of the
+command that built it unless `--keep-images`; an image the command found already there is left for
+whoever built it. Before every batch the runner image is checked and built again if it is missing,
+so two code-viz runs on one host at once (Bill's two-slot minipc, `bill-minipc-slot`) do not break
+each other: the first one to finish may remove a shared image, and the other rebuilds it (on
+2026-11-14 a CS374 build lost 60 examples that way before this). Runner images are built with
+`--network host` because downloads timed out on a default bridge network.
 
 On Bill's machines the containers run on minipc (`--host bill@10.0.0.26`, or `CODE_VIZ_HOST`),
 never on minipc2; staging folders move to `~/scratch/` when done.
