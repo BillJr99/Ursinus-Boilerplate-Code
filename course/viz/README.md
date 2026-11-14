@@ -39,7 +39,7 @@ working. Bison grammars and automata, which are files rather than blocks, are li
 | bison | flex + bison | the LR state stack, lookahead and action at each step (shift, reduce by rule N, accept), the parse tree as it grows, and bison's state graph with the current state highlighted |
 | automaton | DOT (files/dotty) | the automaton with its current state set highlighted as it reads an input string (DFA, NFA, ε-NFA); the input can be edited in the page |
 | c | C, C++ | stack frames with locals and arguments, arrays as cells, structs, pointers drawn as arrows to the variable they point at (gdb steps the program) |
-| agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, tool calls and printed output; recorded once on a machine with Ollama and replayed |
+| agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once on a machine with Ollama and replayed |
 | cast | shell | a terminal replay of each command and its output |
 | plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace) |
 
@@ -68,7 +68,7 @@ Steps by kind:
 - **bison:** `{action, token, stack, stack_after, state, tree}`; plus top-level `rules`, `graph` (DOT), `input`, `files`.
 - **automaton:** `{read, rest, states}`; plus `automaton: {states, start, accept, edges: [[from, to, symbol]]}` and `input`.
 - **c:** `{line, file, stack: [{func, line, vars: {name: {v|ptr|array|struct, type, addr}}}], out}`.
-- **agent:** `events` (also `steps`): `{t, type: model-call|embedding|tool-call|print, model, messages|prompt, reply, tokens_in, tokens_out, seconds, name, arguments, text}`; plus `recorded`.
+- **agent:** `events` (also `steps`): `{t, line, type: model-call|embedding|retrieval|prompt|tool-call|print, model, messages|prompt, reply, tokens_in, tokens_out, seconds, vectors, dims, uses, name, arguments, text}`; a retrieval event has `{function, query, k, metric, passages: [{rank, score, id, source, text, top}]}`; plus `recorded`. A retrieval is caught when a function in the program returns, or holds in a local, a list of (score, passage) pairs sorted by score.
 - **cast:** `cast: {header, events: [[time, "o", text]]}` (asciinema v2).
 
 `viz/expected/<id>.out` holds each example's expected output; `code-viz build --check` fails when

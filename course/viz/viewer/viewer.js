@@ -125,6 +125,7 @@
     if (!s) return null;
     if (t.kind === "env" && t.language === "python") return s.line;
     if (t.kind === "c") return s.line;
+    if (t.kind === "agent") return s.line || null;
     return null;
   }
 
@@ -147,6 +148,8 @@
     // output so far
     let out = t.stdout || "";
     if (s && typeof s.out === "number" && (t.kind === "env" || t.kind === "c")) out = (t.stdout || "").slice(0, s.out);
+    if (t.kind === "agent" && steps.some((e) => e.line !== undefined))  // recordings with lines: output so far
+      out = steps.slice(0, state.step + 1).filter((e) => e.type === "print" || e.type === "prompt").map((e) => e.text + "\n").join("");
     $("output").innerHTML = esc(out) + (t.error && state.step === n - 1 ? `<span class="err">\n${esc(t.error)}</span>` : "");
     const P = { env: t.language === "scheme" ? schemePanel : pyPanel, lambda: lambdaPanel, bison: bisonPanel, automaton: autoPanel,
                 c: cPanel, agent: agentPanel, cast: castPanel };
@@ -292,6 +295,109 @@
     } catch (e) { viz = null; el.innerHTML = '<p class="note">graph could not be drawn: ' + esc(e.message || e) + "</p>"; }
   }
 
+  // ---------- zoomable graph (bison states, automata) ----------
+  // The graph is drawn once per example; each step only changes which nodes are lit. Wheel or pinch
+  // zooms, dragging pans, and by default the view follows the current state ("Current state"
+  // turns following back on after you zoom or pan yourself).
+  const gv = { key: null, svg: null, full: null, vb: null, follow: true, pointers: new Map() };
+
+  function svgPoint(svg, vb, cx, cy) {
+    const r = svg.getBoundingClientRect();
+    const s = Math.min(r.width / vb.w, r.height / vb.h);
+    const ox = (r.width - vb.w * s) / 2, oy = (r.height - vb.h * s) / 2;
+    return { x: vb.x + (cx - r.left - ox) / s, y: vb.y + (cy - r.top - oy) / s, s };
+  }
+  function applyVB() { if (gv.svg && gv.vb) gv.svg.setAttribute("viewBox", `${gv.vb.x} ${gv.vb.y} ${gv.vb.w} ${gv.vb.h}`); }
+  function zoomAt(f, cx, cy) {
+    const p = svgPoint(gv.svg, gv.vb, cx, cy);
+    const w = Math.min(gv.full.w * 3, Math.max(40, gv.vb.w * f)), h = gv.vb.h * (w / gv.vb.w);
+    gv.vb = { x: p.x - (p.x - gv.vb.x) * (w / gv.vb.w), y: p.y - (p.y - gv.vb.y) * (h / gv.vb.h), w, h };
+    applyVB();
+  }
+  function nodeBox(name) {
+    for (const g of gv.svg.querySelectorAll("g.node")) {
+      const t = g.querySelector("title");
+      if (t && t.textContent.trim() === String(name)) {
+        const b = g.getBBox();
+        const root = gv.svg.querySelector("g.graph");
+        const m = root && root.transform.baseVal.consolidate() ? root.transform.baseVal.consolidate().matrix : { a: 1, d: 1, e: 0, f: 0 };
+        return { x: b.x * m.a + m.e, y: b.y * m.d + m.f, w: b.width * m.a, h: b.height * m.d, g };
+      }
+    }
+    return null;
+  }
+  function zoomToNodes(names) {
+    const boxes = names.map(nodeBox).filter(Boolean);
+    if (!boxes.length) { gv.vb = { ...gv.full }; return applyVB(); }
+    const x0 = Math.min(...boxes.map((b) => b.x)), y0 = Math.min(...boxes.map((b) => b.y));
+    const x1 = Math.max(...boxes.map((b) => b.x + b.w)), y1 = Math.max(...boxes.map((b) => b.y + b.h));
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    // show the state with its neighbours around it, never wider than the whole graph
+    const w = Math.min(gv.full.w, Math.max(380, (x1 - x0) * 3)), h = Math.min(gv.full.h, Math.max(240, (y1 - y0) * 2.6));
+    gv.vb = { x: cx - w / 2, y: cy - h / 2, w, h };
+    applyVB();
+  }
+  function lightNodes(names, color) {
+    for (const g of gv.svg.querySelectorAll("g.node")) {
+      const shape = g.querySelector("ellipse, polygon, path");
+      if (!shape) continue;
+      if (!shape.dataset.orig) shape.dataset.orig = shape.getAttribute("fill") || "none";
+      const t = g.querySelector("title");
+      const on = t && names.includes(t.textContent.trim());
+      shape.setAttribute("fill", on ? color : shape.dataset.orig);
+    }
+  }
+  async function graphView(el, key, dot, names, color, opts) {
+    el.innerHTML = '<div class="gbar"><button data-z="fit">Fit</button><button data-z="cur">Current state</button>' +
+      '<button data-z="in">+</button><button data-z="out">&minus;</button><span class="note">wheel or pinch to zoom, drag to move</span></div><div class="gbox"></div>';
+    const box = el.querySelector(".gbox");
+    if (gv.key !== key) {
+      try {
+        if (!viz && window.Viz) viz = new Viz();
+        if (!viz) { box.innerHTML = '<pre class="note">' + esc(dot.slice(0, 2000)) + "</pre>"; return; }
+        const svg = await viz.renderSVGElement(dot);
+        const vb = svg.viewBox.baseVal;
+        gv.key = key; gv.svg = svg; gv.full = { x: vb.x, y: vb.y, w: vb.width, h: vb.height }; gv.vb = { ...gv.full };
+        gv.follow = (opts && opts.follow) !== false;
+        svg.setAttribute("width", "100%"); svg.setAttribute("height", "100%");
+        svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+        wire(svg);
+      } catch (e) { viz = null; box.innerHTML = '<p class="note">graph could not be drawn: ' + esc(e.message || e) + "</p>"; return; }
+    }
+    box.appendChild(gv.svg);
+    lightNodes(names, color);
+    if (gv.follow) zoomToNodes(names); else applyVB();
+    el.querySelector(".gbar").onclick = (e) => {
+      const z = e.target.dataset.z; if (!z) return;
+      const r = gv.svg.getBoundingClientRect();
+      if (z === "fit") { gv.follow = false; gv.vb = { ...gv.full }; applyVB(); }
+      if (z === "cur") { gv.follow = true; zoomToNodes(names); }
+      if (z === "in") { gv.follow = false; zoomAt(0.7, r.left + r.width / 2, r.top + r.height / 2); }
+      if (z === "out") { gv.follow = false; zoomAt(1.4, r.left + r.width / 2, r.top + r.height / 2); }
+    };
+  }
+  function wire(svg) {
+    svg.addEventListener("wheel", (e) => { e.preventDefault(); gv.follow = false; zoomAt(Math.exp(e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+    svg.addEventListener("pointerdown", (e) => { svg.setPointerCapture(e.pointerId); gv.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY }); });
+    svg.addEventListener("pointermove", (e) => {
+      if (!gv.pointers.has(e.pointerId)) return;
+      const prev = gv.pointers.get(e.pointerId);
+      if (gv.pointers.size === 1) {
+        const p = svgPoint(svg, gv.vb, 0, 0);
+        gv.vb.x -= (e.clientX - prev.x) / p.s; gv.vb.y -= (e.clientY - prev.y) / p.s; applyVB();
+      } else if (gv.pointers.size === 2) {
+        const [a, b] = [...gv.pointers.entries()].map(([id, q]) => (id === e.pointerId ? { x: e.clientX, y: e.clientY } : q));
+        const [pa, pb] = [...gv.pointers.values()];
+        const before = Math.hypot(pa.x - pb.x, pa.y - pb.y), after = Math.hypot(a.x - b.x, a.y - b.y);
+        if (before > 0 && after > 0) zoomAt(before / after, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      }
+      gv.follow = false;
+      gv.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    });
+    const up = (e) => gv.pointers.delete(e.pointerId);
+    svg.addEventListener("pointerup", up); svg.addEventListener("pointercancel", up);
+  }
+
   function highlightDot(dot, names, color) {
     const add = names.map((n) => `"${n}" [style=filled fillcolor="${color}"];`).join("\n");
     const i = dot.lastIndexOf("}");
@@ -318,13 +424,14 @@
     $("paneltitle").textContent = "LR parse of: " + (t.input || "");
     const panel = $("panel");
     if (!s) { panel.innerHTML = '<p class="err">' + esc(t.error || "No steps.") + "</p>"; return; }
-    const lo = Math.max(0, state.step - 8), hi = Math.min(steps.length, state.step + 9);
+    const lo = Math.max(0, state.step - 5), hi = Math.min(steps.length, state.step + 5);
     const rows = steps.slice(lo, hi).map((x, j) => { const i = lo + j; return `<tr class="${i === state.step ? "cur" : i < state.step ? "done" : ""}"><td>${i + 1}</td><td>${esc((x.stack_after || x.stack || []).join(" "))}</td><td>${esc(x.token || "")}</td><td>${esc(x.action)}</td></tr>`; }).join("");
-    panel.innerHTML = `<div class="split"><div><div class="panel-title">State stack, lookahead, action</div><table class="steps"><tr><th>#</th><th>stack</th><th>lookahead</th><th>action</th></tr>${rows}</table></div>` +
-      `<div class="pair"><div><div class="panel-title">Parse tree so far</div><div class="tree">${treeSvg(s.tree || [])}</div></div>` +
-      `<div><div class="panel-title">Parser state ${esc(String((s.stack_after || s.stack || []).slice(-1)[0] ?? ""))} in the state graph</div><div class="graph" id="g"></div></div></div></div>`;
+    // the state graph goes first and full width, so the current state is readable; the steps and the tree sit under it
+    panel.innerHTML = `<div class="split"><div><div class="panel-title">Parser state ${esc(String((s.stack_after || s.stack || []).slice(-1)[0] ?? ""))} in the state graph</div><div class="graph" id="g"></div></div>` +
+      `<div class="pair"><div><div class="panel-title">State stack, lookahead, action</div><table class="steps"><tr><th>#</th><th>stack</th><th>lookahead</th><th>action</th></tr>${rows}</table></div>` +
+      `<div><div class="panel-title">Parse tree so far</div><div class="tree">${treeSvg(s.tree || [])}</div></div></div></div>`;
     const top = (s.stack_after || s.stack || []).slice(-1)[0];
-    if (t.graph) renderDot($("g"), highlightDot(t.graph, top === undefined ? [] : [String(top)], "#ffd54f"));
+    if (t.graph) graphView($("g"), "bison:" + t.id, t.graph, top === undefined ? [] : [String(top)], "#ffd54f");
   }
 
   // ---------- automata ----------
@@ -348,7 +455,8 @@
     const read = (t.input || "").slice(0, (t.input || "").length - s.rest.length);
     panel.innerHTML = `<div class="term">read: <b>${esc(read)}</b><span class="note">${esc(s.rest)}</span></div>` +
       `<div class="note-line">current state${s.states.length === 1 ? "" : "s"}: ${esc(s.states.join(", ") || "none (stuck)")}</div><div class="graph" id="g"></div>`;
-    renderDot($("g"), highlightDot(t.source, s.states, acc && done ? "#a5d6a7" : "#ffd54f"));
+    // small graphs: start fitted, highlight the current states
+    graphView($("g"), "auto:" + t.id, t.source, s.states, acc && done ? "#a5d6a7" : "#ffd54f", { follow: false });
   }
 
   // ---------- C memory ----------
@@ -379,12 +487,29 @@
     if (!steps.length) { panel.innerHTML = '<p class="err">' + esc(t.error || "No events recorded.") + "</p>"; return; }
     panel.innerHTML = `<div class="timeline">${steps.map((e, i) => {
       const cls = "ev" + (i === state.step ? " cur" : i > state.step ? " future" : "");
-      if (e.type === "print") return `<div class="${cls}"><h5>${e.t.toFixed(2)} s · program output</h5><pre>${esc(e.text)}</pre></div>`;
-      if (e.type === "tool-call") return `<div class="${cls}"><h5>${e.t.toFixed(2)} s · tool call <b>${esc(e.name)}</b></h5><pre>${esc(JSON.stringify(e.arguments, null, 1))}</pre></div>`;
+      const at = `${e.t.toFixed(2)} s${e.line ? ` · line ${e.line}` : ""}`;
+      if (e.type === "print") return `<div class="${cls}"><h5>${at} · program output</h5><pre>${esc(e.text)}</pre></div>`;
+      if (e.type === "retrieval") {
+        const rows = e.passages.map((p) => `<tr class="${p.top ? "top" : "skip"}"><td>${p.rank}</td><td>${p.score.toFixed(3)}</td>` +
+          `<td>${esc(p.source || "")}${p.id ? `<div class="note">${esc(p.id)}</div>` : ""}</td><td>${esc(p.text)}</td><td>${p.top ? "top " + e.k : ""}</td></tr>`).join("");
+        return `<div class="${cls} retr"><h5>${at} · retrieval <b>${esc(e.function)}</b><span class="badge">${e.passages.length} passages ranked by ${esc(e.metric)}</span><span class="badge">top ${e.k} kept</span></h5>` +
+          (e.query !== null && e.query !== undefined ? `<div class="query">query: <b>${esc(e.query)}</b></div>` : "") +
+          `<table class="steps rank"><tr><th>#</th><th>${esc(e.metric)}</th><th>source</th><th>passage</th><th></th></tr>${rows}</table></div>`;
+      }
+      if (e.type === "prompt") {
+        let body = esc(e.text);
+        for (const p of (steps.find((x) => x.type === "retrieval" && x.t <= e.t) || { passages: [] }).passages.filter((p) => p.top && p.text))
+          body = body.split(esc(p.text)).join(`<mark>${esc(p.text)}</mark>`);
+        return `<div class="${cls}"><h5>${at} · prompt assembled from ${e.uses.length} retrieved passage${e.uses.length === 1 ? "" : "s"}` +
+          `<span class="badge">${esc(e.uses.join(", "))}</span></h5><pre>${body}</pre></div>`;
+      }
+      if (e.type === "tool-call") return `<div class="${cls}"><h5>${at} · tool call <b>${esc(e.name)}</b></h5><pre>${esc(JSON.stringify(e.arguments, null, 1))}</pre></div>`;
       const ask = e.messages ? e.messages.map((m) => m.role + ": " + m.content).join("\n\n") : e.prompt || e.input || "";
-      return `<div class="${cls}"><h5>${e.t.toFixed(2)} s · ${e.type === "embedding" ? "embedding" : "model call"} <b>${esc(e.model || "")}</b>` +
+      return `<div class="${cls}"><h5>${at} · ${e.type === "embedding" ? "embedding" : "model call"} <b>${esc(e.model || "")}</b>` +
+        (e.vectors ? `<span class="badge">${e.vectors} vector${e.vectors === 1 ? "" : "s"} × ${e.dims} dims</span>` : "") +
+        (e.uses ? `<span class="badge">prompt uses ${esc(e.uses.join(", "))}</span>` : "") +
         `<span class="badge">${e.seconds !== undefined ? e.seconds + " s" : ""}</span>${e.tokens_out !== undefined ? `<span class="badge">${e.tokens_in || 0} in / ${e.tokens_out} out tokens</span>` : ""}</h5>` +
-        `<details${i === state.step ? " open" : ""}><summary>prompt</summary><pre>${esc(ask)}</pre></details>${e.reply ? `<pre>${esc(e.reply)}</pre>` : ""}</div>`;
+        `<details${i === state.step ? " open" : ""}><summary>${e.type === "embedding" ? "input" : "prompt"}</summary><pre>${esc(ask)}</pre></details>${e.reply ? `<pre>${esc(e.reply)}</pre>` : ""}</div>`;
     }).join("")}</div>`;
     const cur = panel.querySelector(".ev.cur"); if (cur) cur.scrollIntoView({ block: "nearest" });
   }
