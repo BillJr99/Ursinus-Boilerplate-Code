@@ -422,10 +422,13 @@ commits nothing when nothing changed. Two mechanisms, both inside code-viz (no c
    (the kernel randomizes them in a container), library handles, file dates in `ls -l`. After a
    build, every example whose new trace differs from the committed one runs once more. If the two
    new runs agree, the change is real and the new trace is written. If they disagree, the example is
-   volatile (benchmark timings, thread scheduling, C stack addresses), and when its code is the same
-   as the committed trace's (source, setup, interpreter) and its output differs only in such values
-   (numbers, hex addresses, `tmp...` temp names, month and day names) the committed trace is kept:
-   its file is not touched. Steps are not compared for a volatile example, since in threaded code
+   volatile (benchmark timings, thread scheduling, C stack addresses) and its id is added to
+   `viz/volatile.json`; two runs can agree by chance (an `ls -l` twice in the same minute), so an
+   example once seen to vary stays listed. For a volatile example (now or listed), when its code is
+   the same as the committed trace's (source, setup, interpreter) and its output differs only in
+   such values (numbers, hex addresses, `tmp...` temp names, month and day names) the committed
+   trace is kept: its file is not touched. An example never seen to vary is always rewritten when
+   its trace changed, so a real change (an edited data file, a new library version) is not hidden. Steps are not compared for a volatile example, since in threaded code
    the objects alive at a step vary from run to run. The build prints how many it kept. A volatile
    example whose code or output text changed is rewritten. `build --no-settle` writes every new trace (to refresh volatile traces on
    purpose).
@@ -857,6 +860,7 @@ viz/expected/<id>.out                            the expected output, checked by
 viz/qr/<id>.svg, viz/qr/<id>.png                 QR codes of student links (code-viz qr)
 viz/figures.js                                    shows figures (section 7, Figures)
 viz/index.json, viz/catalog.json, viz/manifest.json, viz/notebooks.json
+viz/volatile.json                                 examples seen to vary between runs (section 6, Stable traces)
 ```
 
 ## 20. Testing code-viz itself
