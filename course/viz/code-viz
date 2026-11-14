@@ -830,7 +830,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 TRACERS = os.path.join(HERE, "tracers")
 RUNNERS = os.path.join(HERE, "runners")
 sys.path.insert(0, HERE)
-import langs  # noqa: E402  SQL, Java, JavaScript, MIPS, VHDL (langs.py beside this file)
+import langs as LX  # noqa: E402  SQL, Java, JavaScript, MIPS, VHDL (langs.py beside this file)
 VIEWER = os.path.join(HERE, "viewer")
 sys.path.insert(0, HERE)
 import notebooks as NB  # noqa: E402  Jupyter notebooks under files/ (section 4, Notebooks)
@@ -843,9 +843,9 @@ PLAIN_RUNNER = {"haskell": "haskell", "prolog": "prolog", "ocaml": "ocaml", "min
 LANG_ALIASES = {"py": "python", "python3": "python", "scm": "scheme", "racket": "scheme", "lisp": "scheme",
                 "hs": "haskell", "pl": "prolog", "ml": "ocaml", "c++": "cpp", "bash": "shell", "sh": "shell",
                 "console": "shell", "lambda": "lambda"}
-RUNNER_OF.update(langs.RUNNER_OF)
-PLAIN_RUNNER.update(langs.PLAIN_RUNNER)
-LANG_ALIASES.update(langs.ALIASES)
+RUNNER_OF.update(LX.RUNNER_OF)
+PLAIN_RUNNER.update(LX.PLAIN_RUNNER)
+LANG_ALIASES.update(LX.ALIASES)
 FENCE = re.compile(r"^( {0,12})(`{3,}|~{3,})\s*([A-Za-z0-9_+.#-]*)(.*)$")
 HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 # Blocks under a heading like these are never labeled: pages must not print solutions (section 4).
@@ -1105,7 +1105,7 @@ def interp_page(lab, b):
 def suggest(b):
     """A suggested label for an unlabeled block, or None when it is not a runnable example.
     langs.suggest adds SQL, Java, JavaScript, MIPS and VHDL, and the C fork/thread rule."""
-    return langs.suggest(b, _suggest_base(b))
+    return LX.suggest(b, _suggest_base(b))
 
 
 def _suggest_base(b):
@@ -1273,7 +1273,7 @@ class Docker:
 # ---- jobs ----------------------------------------------------------------------------------------
 EXT = {"python": "py", "scheme": "scm", "lambda": "lam", "c": "c", "cpp": "cpp", "haskell": "hs", "prolog": "pl",
        "ocaml": "ml", "mini": "mini", "shell": "sh"}
-EXT.update(langs.EXT)
+EXT.update(LX.EXT)
 
 
 def job_for(b, root, src_dir, lookup=None):
@@ -1305,7 +1305,7 @@ def job_for(b, root, src_dir, lookup=None):
         job["setup_ids"] = [lab.get("setup_desc", "earlier notebook cells")]
     if lab.get("setup"):
         # setup=<id>[,<id>]: earlier blocks whose code runs first, untraced and silent (section 4)
-        if lang != "python" and lang not in langs.SETUP_LANGS:
+        if lang != "python" and lang not in LX.SETUP_LANGS:
             raise ValueError(f"{lab['id']}: setup= works only for Python, SQL and VHDL blocks")
         chain = setup_chain([x for x in lab["setup"].split(",") if x], lookup or block_lookup(root))
         sfile = f"{lab['id']}/setup.{EXT.get(lang, 'txt')}"
@@ -1378,7 +1378,7 @@ def default_manifest(root, course):
                 txt = open(os.path.join(dp, f), errors="replace").read()
                 if "doublecircle" in txt and "->" in txt:
                     out.append({"id": f"{course}-{slug(f)}", "viz": "automaton", "file": os.path.join(rel, f), "input": "abab"})
-    return out + langs.manifest(root, course, slug)   # MIPS programs and VHDL designs (langs.py)
+    return out + LX.manifest(root, course, slug)   # MIPS programs and VHDL designs (langs.py)
 
 
 def run_jobs(jobs, docker, src_dir):
@@ -1581,8 +1581,8 @@ def cmd_label(a):
                 if b["label"]:
                     continue
                 s = suggest(b)
-                if s and s["lang"] in langs.SETUP_LANGS:
-                    deps = langs.setup_deps(b, [x for x in bs if x["start"] < b["start"]])
+                if s and s["lang"] in LX.SETUP_LANGS:
+                    deps = LX.setup_deps(b, [x for x in bs if x["start"] < b["start"]])
                     if deps is None:
                         continue      # uses a table or entity no earlier block defines
                     if deps:
@@ -1741,7 +1741,7 @@ def write_site(root, info, traces, jobs, a):
     os.makedirs(os.path.join(site, "tracers"), exist_ok=True)
     for f in os.listdir(VIEWER):
         shutil.copy(os.path.join(VIEWER, f), site)
-    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py") + langs.BROWSER_TRACERS:
+    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py") + LX.BROWSER_TRACERS:
         shutil.copy(os.path.join(TRACERS, f), os.path.join(site, "tracers"))
     index_path = os.path.join(site, "index.json")
     index = {e["id"]: e for e in (json.load(open(index_path)).get("examples", []) if os.path.exists(index_path) else [])}
@@ -1832,7 +1832,7 @@ def single_job(a, root, info, src):
     if os.path.exists(target):
         p = os.path.abspath(target)
         ext = os.path.splitext(p)[1].lstrip(".")
-        viz = a.viz or langs.FILE_VIZ.get(ext) or ("automaton" if ext == "dot" else "bison" if os.path.isdir(p) or ext == "y" else
+        viz = a.viz or LX.FILE_VIZ.get(ext) or ("automaton" if ext == "dot" else "bison" if os.path.isdir(p) or ext == "y" else
                         "env" if ext in ("py", "scm", "rkt") else "c" if ext in ("c", "cpp") else "lambda" if ext == "lam" else "plain")
         e = {"id": a.id or ("file-" + slug(p)), "viz": viz, "file": os.path.relpath(p, root) if p.startswith(root) else p,
              "input": a.input or ""}
@@ -1846,7 +1846,7 @@ def single_job(a, root, info, src):
                 shutil.copy(p, dst)
                 fname = f"{e['id']}/{os.path.basename(p)}"
             lang = {"py": "python", "scm": "scheme", "rkt": "scheme", "c": "c", "cpp": "cpp", "lam": "lambda", "hs": "haskell",
-                    "pl": "prolog", "ml": "ocaml", "sh": "shell", **langs.FILE_LANG}.get(ext, "flexbison" if viz == "bison" else "dot" if viz == "automaton" else "python")
+                    "pl": "prolog", "ml": "ocaml", "sh": "shell", **LX.FILE_LANG}.get(ext, "flexbison" if viz == "bison" else "dot" if viz == "automaton" else "python")
             return {"id": e["id"], "viz": viz, "lang": lang, "file": fname, "input": e["input"], "timeout": 60,
                     "max_steps": 800, "page": p, "line": 1}
         if viz in ("bison", "automaton"):
@@ -1895,7 +1895,7 @@ def cmd_serve(a):
     for f in os.listdir(VIEWER):
         shutil.copy(os.path.join(VIEWER, f), site)
     os.makedirs(os.path.join(site, "tracers"), exist_ok=True)
-    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py") + langs.BROWSER_TRACERS:
+    for f in ("pytrace.py", "schemetrace.py", "lambdatrace.py", "automaton.py") + LX.BROWSER_TRACERS:
         shutil.copy(os.path.join(TRACERS, f), os.path.join(site, "tracers"))
     first = ""
     if a.target:
