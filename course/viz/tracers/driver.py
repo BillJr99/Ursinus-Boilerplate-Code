@@ -48,6 +48,8 @@ import subprocess
 import sys
 import tempfile
 
+import langrun  # noqa: E402  (beside this file in /viz/tracers)
+
 T = "/viz/tracers"
 SRC = "/work/src"
 OUT = "/work/out"
@@ -208,6 +210,9 @@ def one(job):
 
 def _one(job):
     v, lang = job["viz"], job["lang"]
+    r = langrun.run(job, sh, tracer, SRC, T)   # SQL, Java, JavaScript, MIPS, VHDL (langrun.py)
+    if r is not None:
+        return r
     ms = str(job.get("max_steps", 800))
     st = ("--setup", os.path.join(SRC, job["setup"])) if job.get("setup") else ()
     if v == "env" and lang == "python":
