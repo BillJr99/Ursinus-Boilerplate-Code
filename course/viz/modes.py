@@ -119,12 +119,19 @@ def parse_lines(spec):
 
 
 def normalize_tour(t):
-    """Source conveniences: `note` -> `description`, `line: N` kept (CodeTour) but also as lines."""
+    """Source conveniences: `note` -> `description`; `line: N` (CodeTour) also sets lines "N" when a
+    step has no lines. A non-object is returned as it is, so validate() reports it."""
+    if not isinstance(t, dict):
+        return t
     t = json.loads(json.dumps(t))
     for s in t.get("steps", []) if isinstance(t.get("steps"), list) else []:
-        if isinstance(s, dict) and "note" in s:
+        if not isinstance(s, dict):
+            continue
+        if "note" in s:
             s.setdefault("description", s.pop("note"))
             s.pop("note", None)
+        if isinstance(s.get("line"), int) and not isinstance(s.get("line"), bool) and "lines" not in s:
+            s["lines"] = str(s["line"])
     t.setdefault("reviewed", False)
     return t
 
@@ -170,6 +177,7 @@ def check_tour(t, vid, name, codes, root):
         errs.append(f"{vid}: no labeled example with this id")
         return errs
     nlines = len(code.split("\n"))
+    cur = vid                          # the block shown: the example, or the latest stage
     nsteps = trace_steps(root, vid)
     for i, s in enumerate(t["steps"]):
         lines = parse_lines(s.get("lines")) + ([s["line"]] if s.get("line") else [])
@@ -178,8 +186,10 @@ def check_tour(t, vid, name, codes, root):
             if sc is None:
                 errs.append(f"/steps[{i}]/stage: no labeled example {s['stage']!r}")
             else:
+                cur = s["stage"]
                 nlines = len(sc.split("\n"))
-        bad = [n for n in lines if n > nlines]
+                nsteps = trace_steps(root, cur)   # run steps after a stage use that stage's trace
+        bad = [n for n in lines if n < 1 or n > nlines]
         if bad:
             errs.append(f"/steps[{i}]: line {bad[0]} is past the code's {nlines} line(s)")
         k = s["kind"]
@@ -190,10 +200,10 @@ def check_tour(t, vid, name, codes, root):
         if k == "run":
             if "trace_step" not in s:
                 errs.append(f"/steps[{i}]: run needs trace_step")
-            elif nsteps is None:
-                errs.append(f"/steps[{i}]: run step, but {vid} has no committed trace")
-            elif s["trace_step"] >= max(nsteps, 1):
-                errs.append(f"/steps[{i}]/trace_step: {s['trace_step']} but the trace has {nsteps} step(s)")
+            elif not nsteps:
+                errs.append(f"/steps[{i}]: run step, but {cur} has no committed trace with steps")
+            elif s["trace_step"] >= nsteps:
+                errs.append(f"/steps[{i}]/trace_step: {s['trace_step']} but the trace of {cur} has {nsteps} step(s)")
         if k == "stage" and not s.get("stage"):
             errs.append(f"/steps[{i}]: stage needs a stage id")
         if not (s.get("description") or s.get("question") or s.get("title")):
@@ -222,7 +232,10 @@ def _yaml_load(text):
         import yaml  # PyYAML, present on the runners; JSON scenarios need nothing
     except ImportError as e:
         raise ValueError("a .yaml scenario needs PyYAML (pip install pyyaml); use .json instead") from e
-    return yaml.safe_load(text)
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"not valid YAML: {e}") from e
 
 
 def scenario_sha(scn):
@@ -264,6 +277,8 @@ def session_sources(root, session_blocks):
             doc = {"_error": str(e)}
         if isinstance(doc, dict):
             doc.setdefault("id", base)
+        else:
+            doc = {"_error": "a scenario must be a JSON or YAML object", "id": base}
         out[base] = doc
     for vid, title, page, code, lab in session_blocks:
         if vid in out:
@@ -293,6 +308,8 @@ def load_recording(root, vid):
 def check_session(doc, recording=None):
     """Problems with a session source (and its recording, when given). A recording whose scenario no
     longer matches the source is reported as stale."""
+    if not isinstance(doc, dict):
+        return ["a scenario must be an object"]
     if "_error" in doc:
         return [doc["_error"]]
     errs = validate(doc, "session")
@@ -335,6 +352,12 @@ def publish(root, codes, session_blocks, index_entries):
             with open(dst, "w", encoding="utf-8") as f:
                 f.write(text)
         written.setdefault(vid, []).append(name or "")
+    # Withdraw published tours whose source was removed or no longer passes (viz/ is generated, and
+    # git keeps the history, so this is the same as `git rm` of a stale build output).
+    keep = {f"{v}--{n}.json" if n else f"{v}.json" for v, ns in written.items() for n in ns}
+    for p in glob.glob(os.path.join(out_dir, "*.json")):
+        if os.path.basename(p) not in keep:
+            os.unlink(p)
     recorded = set()
     for vid, doc in sessions.items():
         rec = load_recording(root, vid)
@@ -345,6 +368,7 @@ def publish(root, codes, session_blocks, index_entries):
             recorded.add(vid)
         problems += [f"session {vid}: {e}" for e in errs]
     for e in index_entries:
+        e.pop("tours", None)
         modes = ["run"] if e.get("viz") != "session" else []
         if e["id"] in written:
             modes.append("explain")
