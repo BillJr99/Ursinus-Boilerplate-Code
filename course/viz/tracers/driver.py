@@ -26,7 +26,8 @@ def sh(cmd, timeout, cwd=None, inp=None, env=None):
 
 def tracer(script, job, extra=()):
     path = os.path.join(SRC, job["file"])
-    r = sh([sys.executable, os.path.join(T, script), path, *extra], job.get("timeout", 15), cwd=os.path.dirname(path))
+    r = sh([sys.executable, os.path.join(T, script), path, *extra], job.get("timeout", 15), cwd=os.path.dirname(path),
+           env={"CVIZ_ARGS": job.get("args", "")})
     if r.returncode != 0 and not r.stdout.strip():
         raise RuntimeError((r.stderr or "tracer failed")[-600:])
     return json.loads(r.stdout)

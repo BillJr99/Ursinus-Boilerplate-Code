@@ -21,10 +21,41 @@
     const idx = await loadIndex();
     if (!id) return showList(idx);
     let t;
-    try { t = await (await fetch("traces/" + encodeURIComponent(id) + ".json", { cache: "no-store" })).json(); }
+    try { t = expand(await loadTrace(id)); }
     catch (e) { $("list").hidden = false; $("example").hidden = true; $("list").innerHTML = `<p class="err">No trace for ${esc(id)}.</p>`; return; }
     const meta = (idx.examples || []).find((e) => e.id === id) || {};
     showTrace(t, meta);
+  }
+
+  async function loadTrace(id) {
+    // traces are gzipped; the browser decompresses them (DecompressionStream)
+    const r = await fetch("traces/" + encodeURIComponent(id) + ".json.gz", { cache: "no-store" });
+    if (!r.ok) throw new Error("no trace");
+    const buf = await r.arrayBuffer();
+    const b = new Uint8Array(buf);
+    // gzip magic number; a server that already decompressed it hands back plain JSON
+    if (b[0] === 0x1f && b[1] === 0x8b) {
+      const text = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+      return JSON.parse(text);
+    }
+    return JSON.parse(new TextDecoder().decode(b));
+  }
+
+  // A compact trace stores, per step, only the objects that changed and the ids still present.
+  function expand(t) {
+    if (!t.compact) return t;
+    const keys = t.language === "python" ? ["heap"] : ["frames", "closures"];
+    const cur = {};
+    for (const k of keys) cur[k] = {};
+    for (const s of t.steps || []) {
+      for (const k of keys) {
+        const next = {};
+        for (const id of s[k + "_ids"] || []) next[id] = (s[k] && id in s[k]) ? s[k][id] : cur[k][id];
+        s[k] = next; cur[k] = next;
+      }
+    }
+    t.compact = 0;
+    return t;
   }
 
   function showList(idx) {

@@ -136,8 +136,11 @@ def trace_source(src, max_steps=800, filename="<program>"):
     t = Tracer(filename, max_steps)
     code = compile(src, filename, "exec")
     g = {"__name__": "__main__", "__builtins__": __builtins__}
-    old = sys.stdout
+    old, old_argv = sys.stdout, sys.argv
     sys.stdout = t.out
+    import os
+    import shlex
+    sys.argv = [filename] + shlex.split(os.environ.get("CVIZ_ARGS", ""))  # the label's args=, else none
     error = None
     try:
         sys.settrace(t.trace)
@@ -150,7 +153,7 @@ def trace_source(src, max_steps=800, filename="<program>"):
         error = f"{type(e).__name__}: {e}"
     finally:
         sys.settrace(None)
-        sys.stdout = old
+        sys.stdout, sys.argv = old, old_argv
     return {"version": 1, "kind": "env", "language": "python", "source": src, "steps": t.steps,
             "stdout": t.out.getvalue(), "error": error, "truncated": t.truncated}
 

@@ -153,6 +153,8 @@ def main(path):
     old = sys.stdout
     sys.stdout = Tee()
     error = None
+    import shlex
+    sys.argv = [path] + shlex.split(os.environ.get("CVIZ_ARGS", ""))  # the label's args=, else none
     try:
         runpy.run_path(path, run_name="__main__")
     except SystemExit:

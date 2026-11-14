@@ -23,6 +23,7 @@ LABELS
     viz=     env (Python, Scheme), lambda, c, bison, automaton, agent, cast (shell), plain (output only)
     lang=    python, scheme, lambda, c, cpp, haskell, prolog, ocaml, mini, shell (default: the fence's language)
     input=   "text" given to the program on stdin, to a bison parser, or to an automaton
+    args=    "command line arguments" for the program (Python and agent examples)
     record   (agent examples) replay the committed recording; never re-run in CI
   Files that are not code blocks (bison grammars, automata .dot files) are listed in viz/manifest.json.
 
@@ -49,7 +50,10 @@ USAGE EXAMPLES
   code-viz build --update-expected       # accept today's outputs as the expected ones
   code-viz build --record-agents --ollama-network cviz-ollama   # re-record CS357 agent runs
 
-  # 5. Live mode: serve the viewer on a port; examples can be edited and re-run.
+  # 5. Remove an example that should not be one (its label, link, trace and expected output).
+  code-viz unlabel cs357-tut-llmjudges-3 cs357-tut-llmjudges-4
+
+  # 6. Live mode: serve the viewer on a port; examples can be edited and re-run.
   code-viz serve                         # http://localhost:8765/viz/
   code-viz serve cs374-liascript-closures-2 --port 9000
   code-viz serve my_closure.py           # trace one file and open it in the viewer
@@ -64,11 +68,12 @@ WHERE THINGS RUN
 
 OUTPUT
   viz/index.html, viz/viewer.js, viz/viewer.css     the viewer (static; no server needed)
-  viz/traces/<id>.json                               one trace per example (format: README.md)
+  viz/traces/<id>.json.gz                            one trace per example, gzipped (format: README.md)
   viz/expected/<id>.out                              the expected output, checked by build --check
   viz/index.json, viz/catalog.json, viz/manifest.json
 """
 import argparse
+import gzip
 import hashlib
 import http.server
 import json
@@ -348,6 +353,8 @@ def job_for(b, root, src_dir):
            "max_steps": int(lab.get("max_steps", 800)), "page": b["page"], "line": b["start"] + 1}
     if lab.get("input"):
         job["input"] = lab["input"]
+    if lab.get("args"):
+        job["args"] = lab["args"]
     if lang == "mini":
         mini = os.path.join(root, "files/examples/mininote")
         if os.path.isdir(mini):
@@ -529,9 +536,67 @@ def cmd_label(a):
     return 0
 
 
+def compact(t):
+    """Shrink a trace for the site: each step keeps only the heap objects (Python) or frames and
+    closures (Scheme) that changed since the step before, plus the list of ids still present; the
+    viewer rebuilds the full state on load. Lossless."""
+    steps = t.get("steps") or []
+    if t.get("kind") != "env" or not steps:
+        return t
+    keys = ("heap",) if t.get("language") == "python" else ("frames", "closures")
+    prev = {k: {} for k in keys}
+    for s in steps:
+        for k in keys:
+            cur = s.get(k) or {}
+            s[k + "_ids"] = list(cur.keys())
+            s[k] = {i: o for i, o in cur.items() if prev[k].get(i) != o}
+            prev[k] = cur
+    t["compact"] = 1
+    return t
+
+
+def save_trace(path, t):
+    """Traces are written gzipped (traces/<id>.json.gz); the viewer decompresses them."""
+    data = json.dumps(compact(t), separators=(",", ":")).encode()
+    with gzip.open(path + ".gz", "wb", compresslevel=9) as fh:
+        fh.write(data)
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def norm(text):
     """Outputs compared without memory addresses, which change on every run."""
     return re.sub(r"0x[0-9a-fA-F]+", "0x?", text).rstrip()
+
+
+def cmd_unlabel(a):
+    """Remove examples: their label, their Visualize link, their trace and expected output."""
+    root = repo_root()
+    gone = set(a.ids)
+    for page in pages(root):
+        bs, lines = blocks(root, page)
+        hits = [b for b in bs if b["label"] and b["label"].get("id") in gone]
+        for b in sorted(hits, key=lambda b: -b["start"]):
+            after = b["end"] + 1
+            while after < len(lines) and (lines[after].strip().startswith("@") or lines[after].strip().startswith("<script")):
+                after += 1
+            if after < len(lines) and LINK_MARK in lines[after] and f"#{b['label']['id']})" in lines[after]:
+                del lines[after]
+            del lines[b["start"] - 1]
+            print(f"{page}: unlabeled {b['label']['id']}")
+        if hits:
+            open(os.path.join(root, page), "w", encoding="utf-8").write("\n".join(lines))
+    site = os.path.join(root, "viz")
+    for vid in gone:
+        for p in (os.path.join(site, "traces", vid + ".json"), os.path.join(site, "expected", vid + ".out")):
+            if os.path.exists(p):
+                os.remove(p)
+    ip = os.path.join(site, "index.json")
+    if os.path.exists(ip):
+        d = json.load(open(ip))
+        d["examples"] = [e for e in d.get("examples", []) if e["id"] not in gone]
+        json.dump(d, open(ip, "w"), indent=1)
+    return 0
 
 
 def write_site(root, info, traces, jobs, a):
@@ -552,7 +617,7 @@ def write_site(root, info, traces, jobs, a):
         t.setdefault("kind", j["viz"])
         if t.get("error") and not t.get("steps") and not t.get("stdout"):
             failed.append((j["id"], t["error"]))
-        json.dump(t, open(os.path.join(site, "traces", j["id"] + ".json"), "w"))
+        save_trace(os.path.join(site, "traces", j["id"] + ".json"), t)
         exp = os.path.join(site, "expected", j["id"] + ".out")
         out = t.get("stdout") or ""
         if os.path.exists(exp) and not a.update_expected:
@@ -750,6 +815,8 @@ def main():
     b.add_argument("--update-expected", action="store_true"); b.add_argument("--record-agents", action="store_true")
     b.add_argument("--manifest-only", action="store_true", help="only the grammars and automata in viz/manifest.json")
     b.add_argument("--ollama-network"); b.set_defaults(fn=cmd_build)
+    u = sub.add_parser("unlabel", help="remove examples (label, link, trace)")
+    u.add_argument("ids", nargs="+"); u.set_defaults(fn=cmd_unlabel)
     s = sub.add_parser("serve", help="serve the viewer with live re-runs")
     s.add_argument("target", nargs="?"); s.add_argument("--port", type=int, default=8765); s.add_argument("--input")
     s.add_argument("--public", action="store_true", help="listen on all interfaces, not just this machine")
