@@ -145,8 +145,9 @@ were missing theirs until 2026-11-14). The viewer shows the interpreter's files 
 program ("Run by the Python interpreter built on ..."). `label` suggests `interp=page` for Mini blocks
 on a page that has `# name.py` blocks, and `label --try` keeps only the blocks the interpreter runs
 cleanly, so a Mini example that the guide's interpreter cannot parse stays unlabeled and shows up in
-the `label --try` count (CS374 Example 4, `if` as an expression with `{ "adult" }`, is one: the
-guide's parser wants `;` after `"adult"`). Without `interp=`, a Mini block still uses
+the `label --try` count (CS374 Example 4 was one until 2026-11-14: `{ "adult" }` needed its `;`, so
+the example was changed to match the parser, and the grammar notes now say how an `if` expression
+gets its value). Without `interp=`, a Mini block still uses
 `files/examples/mininote` (built with make) when the course has it. To use another command line, set
 `entry="mini.py {file}"`. Student mode's Edit and run does not re-run interpreter examples (they need
 the runner), so it shows the recorded run.
@@ -549,9 +550,8 @@ published by the course's normal Pages build.
 - Step traces stop at 800 steps (lambda: 200) and are marked truncated.
 - Model output varies, so agent outputs are never compared; outputs with timestamps always look
   changed.
-- Of CS374's 8 Mini blocks, 6 run through the project guide's Python interpreter (`interp=page`);
-  Example 4 needs a parser change (`{ "adult" }` without `;`) and Exercise 7.2 prints nothing, so
-  both stay unlabeled. Haskell and OCaml run whole (no
+- Of CS374's 8 Mini blocks, 7 run through the project guide's Python interpreter (`interp=page`);
+  Exercise 7.2 (`make_counter`) prints nothing, so it stays unlabeled. Haskell and OCaml run whole (no
   steps) and none qualified yet; `cs374-tutorial-c-for-flex-bison-1` gives no gdb steps.
 - Large bison state graphs lay out slowly on phones.
 - The Python tracer keeps every object and frame it has drawn alive until the run ends (so their
