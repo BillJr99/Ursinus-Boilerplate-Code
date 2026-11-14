@@ -928,6 +928,7 @@ handed out keeps working:
 | `&t=N` | Explain mode: open at tour step N, from 0 (new) |
 | `&s=N` | Simulate mode: open at session step N, from 0 (new) |
 | `&tour=<name>` | Explain mode: a named tour, when an example has more than one (new) |
+| `&branch=<name>` | Simulate mode: open on a recorded "what if" branch (new) |
 
 With no `mode`, the viewer opens in Run when there is a trace, else Explain, else Simulate. When the
 link asks for a mode the example has no data for, the viewer opens the best mode it has and says so
@@ -941,6 +942,11 @@ switch to Run, Explain or Simulate.
 `viz/index.json` lists each example's `modes` (for example `["run", "explain"]`) and, when an example
 has named tours, `tours`. An entry with no `modes` is Run only. A repo with no `codeviz/` folder and
 no `viz=session` blocks gets no `modes` at all, so its `viz/` stays exactly as it was.
+
+`code-viz build` publishes tours and sessions along with the traces. `code-viz publish` does only that
+part: it copies the viewer into `viz/`, publishes the tours, and refreshes the `modes` in
+`viz/index.json`, without running any example, so a new tour shows up in seconds. CI runs `build`,
+which covers both.
 
 ## 22. Explain mode and the tour format
 
@@ -1002,8 +1008,9 @@ code-viz tour draft <ids> | --all    write a drafting prompt per example (defaul
 
 `tour draft` writes, for each example, a prompt with the code (numbered), the deck's own text before
 and after it, the trace's first visit to each line, the format above, and Bill's writing rules in
-short form. code-viz calls no model itself: a person or a helper gives the prompt to a model, saves
-the reply as `codeviz/tours/<id>.json`, and runs `tour check`. `codeviz/drafts/` is never published.
+short form, so a drafted tour starts out in his voice. code-viz calls no model itself: a person or a
+helper gives the prompt to a model, saves the reply as `codeviz/tours/<id>.json`, and runs `tour
+check`. Prompts go to `codeviz/drafts/` (or `--out`), which is never published; keep them out of git.
 
 ## 23. Simulate mode, sessions and recording
 
@@ -1034,13 +1041,15 @@ A scenario (format version 1, `schemas/session.schema.json`):
 ```
 
 - `commands` run in order in one shell, so `cd` and variables carry over;
-- `images` are pulled first and must name a tag (never `latest`);
-- `network` is `none` (no network at all), `isolated` (the sandbox's own Docker networks only, the
-  default) or `internet` (needed when a command downloads something);
+- `images` must name a tag (never `latest`); they are pulled on the recording host, where downloads
+  work, and loaded into the sandbox, so the sandbox itself needs no internet;
+- `network` is `isolated` (the default: containers reach each other on the sandbox's own Docker
+  networks, nothing outside), `none` (the sandbox's Docker has no default network, so a container
+  gets none unless a command creates one) or `internet` (for a command that downloads something);
 - `files` are written into the work folder first, and `watch` folders (paths relative to the work
   folder) have their file listing snapshotted after each command;
-- `branches` are "what if" variants: run the first `after` main-line steps, then these commands, and
-  record them too, so the class can see what goes wrong;
+- `branches` are "what if" variants: the first `after` main-line commands, then these commands,
+  recorded from a fresh sandbox, so the class can see what goes wrong;
 - `shell` (optional) runs the commands in a container from a pinned image instead of the sandbox's
   own shell, which has only the Docker CLI. Use it for terminal sessions that need compilers or
   other tools (`{"image": "gcc:14", "setup": ["apt-get update", "apt-get install -y flex bison"]}`):
@@ -1051,13 +1060,26 @@ A scenario (format version 1, `schemas/session.schema.json`):
   Docker CLI.
 
 `code-viz record <id>` runs the scenario on the recording host (minipc, with `--host`) inside a
-throwaway Docker-in-Docker sandbox: a pinned `docker:dind` container with its own Docker daemon, so
-nothing the session does touches the host's Docker. After each command it saves the output, the exit
-status, the time it took, and a snapshot of the sandbox's containers, images, networks, ports,
-volumes and watched folders. It then masks what changes from run to run (container and image ids,
-`sha256:` digests, timestamps, Docker's random container names, temporary paths) to stable labels
-such as `<container-1>`, adds any `masking` rules from the scenario, and writes
-`viz/sessions/<id>.json.gz`. The recording is committed, like agent recordings; CI never records.
+throwaway Docker-in-Docker sandbox: a pinned `docker:27.3.1-dind` container with its own Docker
+daemon, privileged only inside itself and on a network of its own, so nothing the session does
+touches the host's Docker or the host's networks. The recorder (`runners/session`, running
+`tracers/sessrec.py`) runs beside it. After each command it saves the output, the exit status, the
+time it took, and a snapshot of the sandbox's containers, images, networks, ports, volumes and
+watched folders. It then replaces what changes from run to run with stable labels, the same label for
+the same value everywhere in the recording: container and image ids become `<id-1>`, digests
+`sha256:<digest-1>`, timestamps and "3 seconds ago" become `<time>`, Docker's made-up container names
+`<name-1>`, temporary paths `/tmp/<tmp-1>`, and the work folder `~`. Rules in the scenario's
+`masking` (a pattern and a label, `{n}` for the counter) are added. It writes
+`viz/sessions/<id>.json.gz`, then publishes as `code-viz publish` does. The recording is committed,
+like agent recordings; CI never records. Afterwards the sandbox, its network, the images the
+recording pulled and the recorder image it built are removed, and the staging folder moves to
+`~/scratch/code-viz` on the host.
+
+```
+code-viz session check [ids] [-v]    check scenarios and recordings (stale, not recorded)
+code-viz record <ids> | --all        record sessions (main line and each branch)
+code-viz record --check <ids>        record again and list what changed; writes nothing
+```
 
 How each command runs, so a recording looks like a student's terminal and does not vary between runs:
 
