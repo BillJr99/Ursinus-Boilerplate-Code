@@ -202,9 +202,26 @@ def add_links(root, info, pages, link_mark, check=False):
         ids, cells = [e["id"] for e in ex], [e["cell"] for e in ex]
         name = os.path.basename(n["file"])
         hit = None
+        want = None
         for page in pages:
             lines = open(os.path.join(root, page), encoding="utf-8", errors="replace").read().split("\n")
-            if any(link_mark in l and f"/viz/#{ids[0]})" in l for l in lines):
+            # this notebook's existing link line(s): any line naming one of its ids
+            mine = [k for k, l in enumerate(lines) if link_mark in l and "Visualize this notebook's examples" in l
+                    and any(f"/viz/#{i})" in l for i in ids)]
+            if mine:
+                want = link_text(info, ids, cells) + " " + link_mark
+                indent = re.match(r"^\s*", lines[mine[0]]).group(0)
+                new = list(lines)
+                new[mine[0]] = indent + want            # the line names every current example
+                for k in reversed(mine[1:]):            # and appears once
+                    del new[k]
+                    if k - 1 >= 0 and not new[k - 1].strip() and (k >= len(new) or not new[k].strip()):
+                        del new[k - 1]
+                if new != lines:
+                    missing += 1
+                    print(f"  {page}:{mine[0] + 1}  {n['file']}: link line updated ({len(ids)} example(s))")
+                    if not check:
+                        write_lines(os.path.join(root, page), new)
                 hit = "linked"
                 break
             pat = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])")   # test.ipynb, not my_test.ipynb

@@ -231,7 +231,9 @@ on any page:
 
 The viewer shows the earlier cells collapsed above the cell ("Setup code from code cells 1 to 3 of
 ..."). A page links the notebook when its file name appears on a boundary (`test.ipynb` does not
-match `my_test.ipynb`). `unlabel <id>` removes a notebook example from `viz/notebooks.json`, deletes
+match `my_test.ipynb`). When a notebook gains examples (a later `label --notebooks`), `links` and
+`label --links` rewrite its existing line in place (found by any of its ids) to list every current
+example, and remove a duplicate. `unlabel <id>` removes a notebook example from `viz/notebooks.json`, deletes
 the page's link line that named it, and writes the line again for the notebook's remaining examples.
 
 **Manifest.** `viz/manifest.json` lists bison grammars (`files/examples/...`) and automata
