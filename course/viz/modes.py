@@ -395,6 +395,8 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
         if e["id"] in recorded:
             modes.append("simulate")
         e["modes"] = modes
+    # A display-only or session entry whose tour or recording went away has nothing left to show.
+    index_entries[:] = [e for e in index_entries if e["modes"] or e.get("viz") not in ("show", "session")]
     have = {e["id"] for e in index_entries}
     for vid in sorted(recorded - have):
         doc = sessions[vid]

@@ -653,6 +653,7 @@
     const blank = $("blank");
     if (blank && !blank.hidden) { blank.hidden = true; e.preventDefault(); return; }
     if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ($("example").hidden || (e.target.closest && e.target.closest("button, select, a, [contenteditable]") && e.key !== "Escape")) return;
     if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); go("+1"); }
     if (e.key === "ArrowLeft") go("-1");
     if (e.key === "Home") go(0);
@@ -743,6 +744,6 @@
                                           bison: bisonPanel, automaton: autoPanel, c: cPanel, agent: agentPanel, cast: castPanel, plain: plainPanel, ...X.panels }),
                          STUDENT, canRunHere };
   window.addEventListener("hashchange", route);
-  window.addEventListener("resize", () => render());
+  window.addEventListener("resize", () => { if (state.mode === "run") render(); });
   route();
 })();

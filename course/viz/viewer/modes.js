@@ -54,6 +54,11 @@
     label: LABEL.run,
     async show(ctx) {
       const V = ctx.V;
+      // Coming back to Run keeps what was there, including an Edit-and-run result.
+      if (V.state.trace && V.state.trace.id === ctx.id && ctx.pos !== undefined) {
+        document.getElementById("list").hidden = true; document.getElementById("example").hidden = false;
+        V.state.step = ctx.pos; V.renderCode(V.state.trace.source || ""); V.render(); return;
+      }
       const t = V.expand(await V.loadTrace(ctx.id));
       V.showTrace(t, ctx.meta);
       if (ctx.pos !== undefined) { V.state.step = ctx.pos; V.render(); }
