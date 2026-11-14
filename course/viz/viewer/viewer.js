@@ -1,5 +1,8 @@
 /* code-viz viewer (viewer.js). Static: no server is needed except for live re-runs.
 
+   Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 Reading the
+   viewer, 9 Teacher view and student mode, 10 QR codes, 11 Live mode.
+
    WHAT IT IS
    The page a course site serves at <site>/viz/. It loads viz/index.json (the list of examples) and
    viz/traces/<id>.json.gz (one gzipped trace per example, decompressed here with

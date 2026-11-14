@@ -1,5 +1,7 @@
 """code-viz Scheme step recorder.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 Reading the viewer (env, Scheme), 9 Student mode, 14 Trace format.
+
 A small Scheme interpreter that records, for each procedure call and special form it evaluates,
 the expression, the environment chain (each frame and its bindings) and the closures in it, so the
 viewer can draw environment diagrams for binding, scope and closures. Pure Python, so it also runs

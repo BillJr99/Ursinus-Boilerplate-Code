@@ -1,4 +1,5 @@
 # code-viz runner "c" (runners/c/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # gcc, g++ and gdb with Python, for viz=c: examples compile with -g -O0 and are stepped by cstep_gdb.py.
 #
 # How it is used: code-viz builds this image as code-viz-c:<hash of this file> the first time an

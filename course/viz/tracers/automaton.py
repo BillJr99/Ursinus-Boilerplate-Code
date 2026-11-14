@@ -1,5 +1,7 @@
 """code-viz automaton loader and simulator.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 7 Kinds of visualization, 8 Reading the viewer (automaton), 14 Trace format.
+
 Reads a finite automaton drawn in Graphviz DOT (the course's files/dotty/*.dot style: a start
 arrow from an invisible node, accepting states as doublecircle, edge labels as input symbols,
 comma separated, with "ε", "eps" or "epsilon" for epsilon moves) and simulates it on an input

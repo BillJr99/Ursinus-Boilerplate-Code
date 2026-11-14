@@ -1,5 +1,7 @@
 """code-viz shell recorder.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 Reading the viewer (cast), 14 Trace format (cast).
+
 Runs a shell example one command at a time in bash and records an asciinema v2 cast (the prompt,
 each command as typed, and its output with timing), so the viewer can replay it.
 

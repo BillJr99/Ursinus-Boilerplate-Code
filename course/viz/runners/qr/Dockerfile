@@ -1,4 +1,5 @@
 # code-viz runner "qr" (runners/qr/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 5 Commands (qr), 10 QR codes in class and on slides.
 # segno (pure Python) for code-viz qr: writes SVG and PNG QR codes of student links. No network.
 #
 # How it is used: code-viz builds this image as code-viz-qr:<hash of this file> the first time an

@@ -1,5 +1,7 @@
 """code-viz C/C++ stepper, run inside gdb (gdb -batch -x cstep_gdb.py).
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 Reading the viewer (c), 14 Trace format, 18 Known problems.
+
 Steps through the program's own source lines from main, recording at each line the call stack
 (function, line, local variables and arguments with their values and addresses). Pointer values
 are recorded as addresses, and each local's own address is recorded, so the viewer can draw a

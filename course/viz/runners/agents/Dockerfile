@@ -1,4 +1,5 @@
 # code-viz runner "agents" (runners/agents/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 12 Recording agent examples, 15 Where things run and safety.
 # Python with the HTTP clients the CS357 examples use, for viz=agent: agentrec.py records model calls
 # and retrieval. The only runner given a network: --ollama-network NET, which must have a container
 # named or aliased "ollama" (or OLLAMA_HOST set).

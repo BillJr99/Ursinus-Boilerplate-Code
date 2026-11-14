@@ -1,5 +1,7 @@
 """code-viz Python step tracer.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 Reading the viewer (env, Python), 9 Student mode, 14 Trace format.
+
 Runs one Python program under sys.settrace and records, for every line executed in the program
 itself: the line, the call stack (each frame's local variables), the objects those variables point
 to (lists, dicts, tuples, sets, instances, functions and their closures), and the output so far.

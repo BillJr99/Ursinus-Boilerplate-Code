@@ -1,5 +1,7 @@
 """code-viz agent recorder.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 12 Recording agent examples, 14 Trace format (agent).
+
 Runs a CS357-style agent example (Python that calls an Ollama or OpenAI-compatible endpoint) and
 records a timeline: every model call (endpoint, model, the prompt or messages, the reply, token
 counts, time), every tool call the program makes through those calls, and the program's own

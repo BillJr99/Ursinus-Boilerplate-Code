@@ -1,4 +1,5 @@
 # code-viz runner "shell" (runners/shell/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # bash and common tools with Python, for viz=cast: shellcast.py records each command and its output.
 # Runs with no network, so downloading commands fail in the recording.
 #

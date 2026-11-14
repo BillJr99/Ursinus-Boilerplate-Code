@@ -1,5 +1,7 @@
 """code-viz batch driver, run inside a runner container.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Tracers), 15 Where things run and safety.
+
 Reads /work/jobs.json (written by code-viz), runs each example with its tracer under a per-example
 timeout, and writes /work/out/<id>.json. The container runs with no network (except the agents
 runner, which can reach Ollama only), capped CPU, memory and process count, and is removed after.

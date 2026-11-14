@@ -1,5 +1,7 @@
 """code-viz lambda-calculus step recorder.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 13 Tips (Lambda predefined names), 14 Trace format (lambda).
+
 Parses a lambda term and reduces it step by step, in normal order and in applicative order,
 recording the term tree and which redex is reduced next at every step. Pure Python, so it also
 runs in the browser (Pyodide).

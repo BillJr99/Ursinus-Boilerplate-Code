@@ -1,4 +1,5 @@
 # code-viz runner "mini" (runners/mini/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # For the CS374 Mini language. The repo has no Mini interpreter, so these examples are not runnable yet.
 #
 # How it is used: code-viz builds this image as code-viz-mini:<hash of this file> the first time an

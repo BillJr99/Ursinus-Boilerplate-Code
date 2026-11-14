@@ -1,4 +1,5 @@
 # code-viz runner "haskell" (runners/haskell/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # GHC with Python, for plain Haskell examples (run whole; no step trace). None qualified in CS357 or CS374 yet.
 #
 # How it is used: code-viz builds this image as code-viz-haskell:<hash of this file> the first time an

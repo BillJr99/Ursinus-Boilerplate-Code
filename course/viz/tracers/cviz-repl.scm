@@ -1,4 +1,5 @@
 ;; code-viz: run a Scheme file the way the REPL would, printing the value of each top-level form
+;; Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 7 Kinds of visualization (env, Scheme), 14 Trace format.
 ;; (unless it is unspecified), so examples that end with a bare expression show their result.
 ;; Usage: guile --no-auto-compile -s cviz-repl.scm PROGRAM.scm
 ;; Pipeline: tracers/driver.py runs this in the scheme runner for every viz=env Scheme example and

@@ -1,4 +1,5 @@
 # code-viz runner "python" (runners/python/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # Python 3.12 with numpy, pandas, scikit-learn, matplotlib (Agg) and requests, for viz=env (pytrace.py),
 # viz=lambda (lambdatrace.py) and plain Python examples.
 #

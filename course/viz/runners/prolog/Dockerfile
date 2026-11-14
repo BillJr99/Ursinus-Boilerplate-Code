@@ -1,4 +1,5 @@
 # code-viz runner "prolog" (runners/prolog/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # SWI-Prolog with Python, for plain Prolog examples (run whole; no step trace).
 #
 # How it is used: code-viz builds this image as code-viz-prolog:<hash of this file> the first time an

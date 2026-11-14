@@ -1,4 +1,5 @@
 # code-viz runner "scheme" (runners/scheme/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # Guile plus Python for schemetrace.py: viz=env Scheme examples are traced by the model interpreter and
 # checked against Guile (cviz-repl.scm); differences mark the trace "approximate".
 #

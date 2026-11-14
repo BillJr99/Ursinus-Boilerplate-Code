@@ -1,5 +1,7 @@
 """code-viz flex/bison tracer.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 4 Labels and ids (Manifest), 8 Reading the viewer (bison), 14 Trace format.
+
 Builds a scanner and parser from a .y grammar (and a .l scanner when there is one) with bison's
 parse tracing on, runs it on an input string, and turns bison's own trace (stderr) into steps:
 the token read, the action (shift, reduce by rule N, accept, error), the state stack and the

@@ -1,4 +1,5 @@
 # code-viz runner "flexbison" (runners/flexbison/Dockerfile).
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 2 Architecture (Runners), 15 Where things run and safety.
 # flex, bison 3.8 and gcc with Python, for viz=bison: bisontrace.py builds the parser with tracing
 # on and turns bison's trace into steps; also used for the grammars in viz/manifest.json.
 #

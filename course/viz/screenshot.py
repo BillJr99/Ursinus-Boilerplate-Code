@@ -1,5 +1,7 @@
 """code-viz screenshots and render check, run inside a Playwright container.
 
+Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 20 Testing code-viz itself.
+
 Serves a built viz/ folder, opens each requested example at a given step in headless Chromium
 (1400 x 900, light theme) and saves a PNG; with --check it opens a sample of examples and reports
 any that fail to render (a JavaScript error, an empty panel).

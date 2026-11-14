@@ -2,7 +2,10 @@
    prefers-color-scheme and data-theme; panels: env frames/heap/closures, lambda tree, bison table and
    graph box (.gbox), agent timeline (.ev), terminal replay. The QR dialog (.qrdialog) is the teacher's
    projector view; body.student is student mode (?student=1): one column, 17 px text, 44 px touch
-   targets, step controls sticky at the bottom with safe-area insets. [hidden] always hides. */
+   targets, step controls sticky at the bottom with safe-area insets. [hidden] always hides.
+
+   Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 8 and 9.
+*/
 :root {
   --bg: #fbfaf7; --fg: #1d2330; --muted: #677085; --line: #d9dde5; --card: #ffffff;
   --accent: #1f6feb; --hl: #fff2b3; --hl-strong: #ffd54f; --ok: #1a7f37; --bad: #c62828;

@@ -1,4 +1,5 @@
 # code-viz workflow template. Copy to a course repo as .github/workflows/code-viz.yml.
+# Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 16 CI, 6 Expected outputs and churn.
 #
 # It re-runs every labeled example (except recorded agent examples, which need Ollama and are
 # recorded on minipc and committed) and fails when an example's output changed or an example
