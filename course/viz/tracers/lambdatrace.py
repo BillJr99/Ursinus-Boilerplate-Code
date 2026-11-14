@@ -10,6 +10,34 @@ comments. Definitions "NAME = term" on earlier lines are substituted into the la
 can define TRUE, FALSE, AND and then reduce AND TRUE FALSE.
 
 Usage:  python3 lambdatrace.py TERMFILE [--max-steps N] > trace.json
+
+PIPELINE
+  Called by driver.py in the python runner (viz=lambda), and by the viewer in the browser
+  (Pyodide) for Edit and Run, so lambda terms can be typed and reduced on a phone.
+
+TRACE FIELDS WRITTEN
+  kind "lambda", language "lambda", source, expression, definitions, prelude_used ({name: term}
+  for each predefined name the term used), orders: {normal: steps, applicative: steps}, steps
+  (= normal), stdout (the normal form), error, truncated. A step is {term, tree, redex}; a tree
+  node is {k: var|lam|app, ...}; redex is a path of f/a/b moves, or null at normal form.
+
+OPTIONS  --max-steps N (default 200).   ENVIRONMENT  none.
+
+DIRECTIVES IN THE SOURCE
+  NAME = term      a definition, substituted into the last line
+  -- free: B C     keep these names as plain variables instead of the predefined combinators
+  # or --         comment lines
+
+EXAMPLES
+  printf 'AND TRUE FALSE\n' > t.lam && python3 lambdatrace.py t.lam > t.json
+  printf -- '-- free: B\nC K A B\n' > t.lam && python3 lambdatrace.py t.lam   # B stays a variable
+
+LIMITS AND KNOWN PROBLEMS
+  - Predefined names (PRELUDE, below) are substituted for any free name that matches, so a
+    variable called B, C, I, K or S becomes that combinator unless the block says "-- free: B"
+    or uses lowercase names. The viewer lists the predefined names a term used.
+  - Reduction stops at max_steps (200); a diverging term (OMEGA, Y under applicative order)
+    shows as truncated.
 """
 import json
 import re
@@ -204,12 +232,19 @@ def worked_term(src):
 
 
 def load(src):
-    defs, last = {}, None
+    """Returns (term, expression text, definitions, prelude names used). A comment line
+    "-- free: B C" (or "# free: B C") keeps those names as plain variables instead of the
+    predefined combinators, so `C K a B` can use B as a variable."""
+    defs, last, keep_free = {}, None, set()
     w = worked_term(src)
     if w:
         src = w
     for line in src.splitlines():
         s = line.strip()
+        fm = re.match(r"^(?:#|--)\s*free\s*:\s*(.+)$", s, re.I)
+        if fm:
+            keep_free.update(fm.group(1).replace(",", " ").split())
+            continue
         if not s or s.startswith("#") or s.startswith("--"):
             continue
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_']*)\s*=\s*(.+)$", s)
@@ -219,24 +254,27 @@ def load(src):
             last = s
     if last is None and defs:
         last = list(defs)[-1]
+    own = set(defs)
     for k, v in PRELUDE.items():
-        defs.setdefault(k, v)
+        if k not in keep_free:
+            defs.setdefault(k, v)
     t = parse(tokens(last))
+    used = sorted(n for n in free(t) if n in defs and n not in own and n in PRELUDE)
     for _ in range(20):  # expand definitions (outermost first), so names stay readable at step 0
         names = [n for n in free(t) if n in defs]
         if not names:
             break
         for n in names:
             t = subst(t, n, parse(tokens(defs[n])))
-    return t, last, defs
+    return t, last, defs, used
 
 
 def trace_source(src, max_steps=200):
-    t, expr, defs = load(src)
+    t, expr, defs, used = load(src)
     normal, cut1 = reduce_all(t, "normal", max_steps)
     applicative, cut2 = reduce_all(t, "applicative", max_steps)
     return {"version": 1, "kind": "lambda", "language": "lambda", "source": src, "expression": expr,
-            "definitions": defs, "orders": {"normal": normal, "applicative": applicative},
+            "definitions": defs, "prelude_used": {n: PRELUDE[n] for n in used}, "orders": {"normal": normal, "applicative": applicative},
             "steps": normal, "stdout": normal[-1]["term"] + "\n", "error": None,
             "truncated": cut1 or cut2}
 

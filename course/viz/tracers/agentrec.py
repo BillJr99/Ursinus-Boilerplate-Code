@@ -15,6 +15,34 @@ the example code is unchanged.
 
 Usage:  python3 agentrec.py PROGRAM.py > trace.json
 Environment: OLLAMA_HOST (default http://ollama:11434) is honoured by the examples themselves.
+
+PIPELINE
+  Only with code-viz build --record-agents (or label --try --agents) and --ollama-network NET:
+  driver.py runs it in the agents runner on a Docker network that has an Ollama container. The
+  recording is committed (viz/traces/<id>.json.gz) and replayed; CI never re-runs agent examples.
+
+TRACE FIELDS WRITTEN
+  kind "agent", language "python", source, stdout, error, truncated, and events (also steps):
+  {t (seconds), line (program line), type: model-call|embedding|retrieval|prompt|tool-call|
+  output, ...}. A model call has model, messages or prompt, reply, tokens_in, tokens_out,
+  seconds; an embedding has vectors and dims; retrieval has query and passages: [{rank, score,
+  source, chunk, text, top}]; prompt has uses (chunk ids) and text.
+
+ENVIRONMENT  OLLAMA_HOST (default http://ollama:11434), honoured by the examples themselves.
+
+EXAMPLE (how code-viz records CS357's agent examples on minipc)
+  sudo -n docker network create cviz-ollama
+  sudo -n docker run -d --name cviz-ollama --network cviz-ollama --network-alias ollama ollama/ollama
+  sudo -n docker exec cviz-ollama ollama pull llama3.2   # and the other models the examples use
+  code-viz --host bill@10.0.0.26 build --record-agents --ollama-network cviz-ollama
+  # afterwards remove the container, the network and the volume
+
+LIMITS AND KNOWN PROBLEMS
+  - The Ollama container must answer to the name "ollama" on that network (--network-alias
+    ollama), or OLLAMA_HOST must point at it; otherwise a recording "succeeds" with only
+    connection errors. code-viz now warns before recording when no such container is found.
+  - Model output varies between runs, so build --check never compares agent outputs, and
+    outputs with timestamps always differ when re-recorded.
 """
 import io
 import json

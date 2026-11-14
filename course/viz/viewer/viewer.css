@@ -1,3 +1,8 @@
+/* code-viz viewer styles (viewer.css). Colours are tokens on :root with a dark set for
+   prefers-color-scheme and data-theme; panels: env frames/heap/closures, lambda tree, bison table and
+   graph box (.gbox), agent timeline (.ev), terminal replay. The QR dialog (.qrdialog) is the teacher's
+   projector view; body.student is student mode (?student=1): one column, 17 px text, 44 px touch
+   targets, step controls sticky at the bottom with safe-area insets. [hidden] always hides. */
 :root {
   --bg: #fbfaf7; --fg: #1d2330; --muted: #677085; --line: #d9dde5; --card: #ffffff;
   --accent: #1f6feb; --hl: #fff2b3; --hl-strong: #ffd54f; --ok: #1a7f37; --bad: #c62828;
@@ -16,6 +21,7 @@
   --frame: #1e2a40; --heap: #1f2d22; --closure: #3a2a1c; --code-bg: #10131a; color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 .bar { display: flex; align-items: center; gap: 12px; padding: 8px max(16px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--line); background: var(--card); }
 .brand { font-weight: 700; color: var(--fg); text-decoration: none; }
@@ -98,3 +104,29 @@ table.rank tr.skip { color: var(--muted); }
 .gbar button { padding: 2px 8px; font-size: 12px; }
 .gbox { height: 380px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); overflow: hidden; touch-action: none; cursor: grab; }
 .gbox svg { display: block; width: 100%; height: 100%; }
+
+/* ---------- QR dialog (teacher: shows the student link as a QR code) ---------- */
+.qrdialog { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; z-index: 50;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.qrbox { background: #fff; color: #111; border-radius: 12px; padding: 20px; text-align: center; max-width: min(92vw, 640px); }
+.qrimg svg { width: min(80vw, 70vh, 520px); height: auto; display: block; margin: 0 auto; }
+.qrtitle { font-size: 22px; font-weight: 700; margin: 12px 0 4px; }
+.qrurl { font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; color: #333; margin: 0 0 12px; }
+
+/* ---------- student mode (?student=1): phone first, large text, controls within thumb reach ---------- */
+body.student { font-size: 17px; }
+body.student .teacher-only, body.student #pagelink { display: none; }
+body.student .bar { padding-block: 6px; }
+body.student .title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+body.student .cols { grid-template-columns: minmax(0, 1fr); }
+body.student .code, body.student .output, body.student textarea { font-size: 15px; }
+body.student .controls { position: sticky; bottom: 0; z-index: 10; background: var(--card); border-top: 1px solid var(--line);
+  margin: 0 calc(-1 * max(16px, env(safe-area-inset-right, 0px))); padding: 8px max(16px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)); order: 9; }
+body.student .example { display: flex; flex-direction: column; }
+body.student .controls button { min-height: 44px; min-width: 44px; font-size: 16px; }
+body.student #slider { flex-basis: 100%; height: 32px; }
+body.student .panel { overflow-x: auto; }
+/* On a phone the state panel matters most: cap the code (and output) so the panel is near the top
+   of the scroll; the current line is kept in view inside the code box. */
+body.student .code { max-height: 40vh; }
+body.student .output { max-height: 22vh; }

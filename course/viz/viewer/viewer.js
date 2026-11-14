@@ -1,11 +1,65 @@
-/* code-viz viewer. Static: loads index.json and traces/<id>.json from the same folder.
-   Address: viz/#<example id>; viz/ alone lists every example. */
+/* code-viz viewer (viewer.js). Static: no server is needed except for live re-runs.
+
+   WHAT IT IS
+   The page a course site serves at <site>/viz/. It loads viz/index.json (the list of examples) and
+   viz/traces/<id>.json.gz (one gzipped trace per example, decompressed here with
+   DecompressionStream), and shows the code with the current line highlighted, step controls, the
+   output so far, and a panel chosen by the trace's kind (README.md, "Kinds of visualization").
+
+   ADDRESSES
+     viz/                         every example, grouped by page
+     viz/#<id>                    one example (teacher view)
+     viz/?step=N#<id>             open at step N
+     viz/?student=1#<id>          student mode (what the QR code opens)
+
+   MODES
+     Teacher view: wide two-column layout, Edit (re-run in the browser, or on a code-viz serve
+     server for container languages), QR (a big QR code of the student link, for the projector).
+     Student mode (?student=1): phone-first single column, large text, step controls pinned to the
+     bottom within thumb reach, no QR button and no link out to the page. "Edit and run" appears
+     only for Python, Scheme and lambda examples, which run here in the browser with Pyodide (the
+     tracers in viz/tracers/ are loaded into Pyodide). Examples that need a container (C, bison,
+     agents, shell) replay their recorded trace read-only. Reset returns to the original example.
+     Drafts are kept in this browser's localStorage only ("code-viz-draft:<path>:<id>"); nothing
+     is sent anywhere, and the page works if storage is blocked.
+
+   PANELS (by trace kind): env (Python and Scheme frames, heap, closures, arrows), lambda (term tree,
+   normal/applicative order, predefined names used), bison (state graph zoomed on the current
+   state, LR stack table, parse tree), automaton (zoomable graph, editable input), c (stack frames,
+   pointers as arrows), agent (timeline: model calls, embeddings, retrieval ranking, assembled
+   prompt, tool calls; the program line behind each event is highlighted), cast (terminal replay),
+   plain (output only).
+
+   LIBRARIES (pinned CDN versions): viz.js 2.1.2 (Graphviz in the browser, for bison and automaton
+   graphs), qrcode-generator 1.4.4 (the QR dialog), Pyodide 0.26.4 (loaded on first Edit and Run).
+
+   LIMITS AND KNOWN PROBLEMS
+   - Traces stop at 800 steps (truncated); the slider shows only what was recorded.
+   - Large bison state graphs lay out slowly on phones.
+   - In lambda terms, predefined names (B, C, I, K, S, TRUE, ...) replace matching variables; the
+     panel says which were used, and a "-- free: B" line keeps a name as a variable.
+   - Edit and Run for container languages needs a code-viz serve server; on the static site it
+     says so instead of running.
+*/
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
-  const state = { trace: null, step: 0, timer: null, order: "normal", index: null, pyodide: null };
+  const state = { trace: null, original: null, step: 0, timer: null, order: "normal", index: null, pyodide: null };
+  // Student mode (?student=1): a phone-friendly layout for students who scanned the QR code. Python,
+  // Scheme and lambda examples can be edited and re-run in the browser; examples that need a
+  // container (C, bison, agents, shell) replay their recorded trace read-only. Drafts are kept in
+  // this browser's localStorage only; nothing is sent anywhere.
+  const STUDENT = new URLSearchParams(location.search).has("student");
+  if (STUDENT) document.body.classList.add("student");
+  const canRunHere = (t) => t && t.kind !== "agent" && (t.kind === "lambda" || ["python", "scheme", "lambda"].includes(t.language || t.lang));
+  const draftKey = (t) => "code-viz-draft:" + location.pathname + ":" + (t && t.id || "");
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage blocked: drafts are not kept */ } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
+  };
 
   // ---------- routing ----------
   async function loadIndex() {
@@ -84,7 +138,12 @@
   }
 
   function showTrace(t, meta) {
-    state.trace = t; state.step = 0;
+    state.trace = t; state.original = t; state.step = 0;
+    $("reset").hidden = true;
+    if (STUDENT) {
+      $("edit").hidden = !canRunHere(t);
+      $("edit").textContent = "Edit and run";
+    }
     $("list").hidden = true; $("example").hidden = false;
     $("title").textContent = `${t.id || ""}  ·  ${t.viz || t.kind} · ${t.lang || t.language || ""}`;
     if (meta.page_url) { $("pagelink").href = meta.page_url; $("pagelink").textContent = "Open the page this example is on"; }
@@ -95,6 +154,10 @@
     // Start partway through the first call, so the page opens on something worth looking at.
     state.step = Number(new URLSearchParams(location.search).get("step") || 0) || 0;
     buildExtra(t);
+    if (STUDENT && !canRunHere(t)) {
+      const n = document.createElement("span"); n.className = "note"; n.textContent = "Recorded run: step through it";
+      $("extra").appendChild(n);
+    }
     renderCode(t.source || "");
     render();
   }
@@ -281,6 +344,9 @@
     panel.innerHTML = `<div class="term">${esc(s.term)}</div>` +
       `<div class="note-line">${red === null ? '<span class="okc">normal form: no redex left</span>' : "highlighted: the redex reduced next" + (next ? " → " + esc(next) : "")}</div>` +
       `<div class="tree">${svg}</div>` +
+      (t.prelude_used && Object.keys(t.prelude_used).length
+        ? `<div class="note-line">Predefined names in this term: ${Object.entries(t.prelude_used).map(([k, v]) => `<b>${esc(k)}</b> = ${esc(v)}`).join("; ")}. ` +
+          `To use one as a plain variable, add a line <code>-- free: ${esc(Object.keys(t.prelude_used)[0])}</code> (or use lowercase names).</div>` : "") +
       `<div class="panel-title">Reduction sequence</div><table class="steps">${steps.map((x, i) => `<tr class="${i === state.step ? "cur" : i < state.step ? "done" : ""}"><td>${i}</td><td>${esc(x.term)}</td></tr>`).join("")}</table>`;
   }
 
@@ -540,6 +606,7 @@
     state.timer = setInterval(() => { if (state.step >= stepsOf(state.trace).length - 1) return stop(); state.step++; render(); }, 700);
   };
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") $("qrdialog").hidden = true;
     if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
     if (e.key === "ArrowRight") { stop(); state.step++; render(); }
     if (e.key === "ArrowLeft") { stop(); state.step--; render(); }
@@ -550,10 +617,31 @@
     const t = state.trace; if (!t) return;
     const on = $("editor").hidden;
     $("editor").hidden = !on; $("code").hidden = on;
-    if (on) $("editbox").value = t.source || "";
-    $("runnote").textContent = ["python", "scheme", "lambda"].includes(t.language || t.lang) || t.kind === "lambda"
-      ? "runs here in your browser" : "runs on the code-viz server (code-viz serve)";
+    if (on) $("editbox").value = store.get(draftKey(state.original)) || state.trace.source || t.source || "";
+    $("runnote").textContent = canRunHere(t) ? "runs here in your browser" : "runs on the code-viz server (code-viz serve)";
   };
+  $("editbox").addEventListener("input", () => { if (state.original) store.set(draftKey(state.original), $("editbox").value); });
+  $("reset").onclick = () => {
+    const t = state.original; if (!t) return;
+    stop(); store.del(draftKey(t));
+    state.trace = t; state.step = 0; $("slider").max = Math.max(0, stepsOf(t).length - 1);
+    $("editor").hidden = true; $("code").hidden = false; $("reset").hidden = true;
+    renderCode(t.source || ""); buildExtra(t); render();
+  };
+  // QR code for this example's student link, drawn in the page (qrcode-generator, pinned CDN).
+  function studentUrl(id) { return location.origin + location.pathname + "?student=1#" + encodeURIComponent(id); }
+  $("qr").onclick = () => {
+    const t = state.trace; if (!t || !t.id) return;
+    const url = studentUrl(t.id);
+    try {
+      const q = window.qrcode(0, "M"); q.addData(url); q.make();
+      $("qrimg").innerHTML = q.createSvgTag({ cellSize: 10, margin: 2, scalable: true });
+    } catch (e) { $("qrimg").textContent = "QR library did not load; share the link below."; }
+    $("qrurl").textContent = url;
+    $("qrdialog").hidden = false;
+  };
+  $("qrclose").onclick = () => { $("qrdialog").hidden = true; };
+  $("qrdialog").addEventListener("click", (e) => { if (e.target === $("qrdialog")) $("qrdialog").hidden = true; });
   async function pyodide() {
     if (state.pyodide) return state.pyodide;
     $("runnote").textContent = "loading Python in the browser (first time only) ...";
@@ -587,6 +675,7 @@
     Object.assign(nt, { id: t.id, viz: t.viz, lang: t.lang });
     $("runnote").textContent = nt.error ? "ran with an error (see output)" : "done";
     state.trace = nt; state.step = 0; $("slider").max = Math.max(0, stepsOf(nt).length - 1);
+    $("reset").hidden = false;
     $("editor").hidden = true; $("code").hidden = false; renderCode(nt.source || code); buildExtra(nt); render();
   };
 

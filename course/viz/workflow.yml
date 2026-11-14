@@ -4,6 +4,15 @@
 # recorded on minipc and committed) and fails when an example's output changed or an example
 # stopped running, so a deck edit that breaks an example is caught. The viewer pages themselves
 # are committed in viz/ and published by the course's normal Pages build.
+#
+# How it runs: on a push to gh-pages that touches _pages/ or viz/manifest.json (or by hand), it checks
+# out the repo with its submodules and runs `code-viz build --check` with the GitHub runner's local
+# Docker (no --host). Runner images are built from code/course/viz/runners/ and removed afterwards.
+# Because traces are written deterministically and unchanged traces are not rewritten, a passing
+# check leaves the tree clean. Agent examples (Ollama) are skipped here; re-record them on minipc with
+# `code-viz build --record-agents --ollama-network NET` and commit the traces.
+# Known limits: the path filter means a change only in code/ (the submodule) does not trigger it;
+# run it by hand (Actions > code-viz check > Run workflow) after moving the submodule.
 name: code-viz check
 
 on:

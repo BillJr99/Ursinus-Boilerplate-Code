@@ -8,6 +8,30 @@ container and in the browser (Pyodide) for live editing.
 
 Usage:  python3 pytrace.py PROGRAM.py [--max-steps N] > trace.json
 In Pyodide: trace_source(code_string, max_steps) returns the trace as a dict.
+
+PIPELINE
+  Called by driver.py in the python runner (viz=env, lang=python), and by the viewer in the
+  browser through Pyodide when someone presses Edit and Run (teacher or student mode).
+
+TRACE FIELDS WRITTEN
+  kind "env", language "python", source, stdout, error, truncated, and steps:
+  {line, event (line|return|exception), stack: [{id, func, line, vars: {name: value}}],
+   heap: {ref: object}, out (stdout so far), ret?, zombies? (frames kept alive by a closure)}.
+  A value is {"p": primitive} or {"r": ref}; objects are {t: list|tuple|set|dict, items},
+  {t: function, name, params, closure, parent} or {t: instance, class, attrs}. code-viz compacts
+  heap per step on the site (heap_ids plus changed objects); the viewer expands it on load.
+
+OPTIONS  --max-steps N (default 800).   ENVIRONMENT  none.
+
+EXAMPLES
+  python3 pytrace.py closures.py > closures.json
+  python3 pytrace.py loop.py --max-steps 2000 > loop.json
+  # in the browser (what the viewer does):  json.dumps(pytrace.trace_source(code, 800))
+
+LIMITS AND KNOWN PROBLEMS
+  - Only the program's own lines are traced; library internals are not.
+  - Large data structures make large traces; the step cap (800) cuts long runs (truncated=true).
+  - input() reads the job's input text; with none it raises EOFError, which shows as an error.
 """
 import io
 import json

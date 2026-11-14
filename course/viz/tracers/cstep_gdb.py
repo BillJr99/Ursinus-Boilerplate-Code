@@ -7,6 +7,24 @@ pointer as an arrow to the variable it points at. Library code is stepped over.
 
 Environment: CVIZ_PROG (the compiled binary), CVIZ_SRC (source file names, comma separated),
 CVIZ_OUT (trace JSON path), CVIZ_STDOUT (program output file), CVIZ_MAX (step cap).
+
+PIPELINE
+  driver.py (c runner) compiles the example with gcc or g++ -g -O0, then runs
+  gdb -batch -x cstep_gdb.py with the environment below; the JSON it writes becomes the trace.
+
+TRACE FIELDS WRITTEN
+  steps: {line, file, stack: [{func, line, vars: {name: {v|ptr|array|struct, type, addr}}}], out};
+  driver.py adds kind "c", language c|cpp, source, stdout, error, truncated.
+
+ENVIRONMENT  CVIZ_PROG, CVIZ_SRC, CVIZ_OUT, CVIZ_STDOUT, CVIZ_MAX (step cap, default 800).
+
+EXAMPLE (inside the c runner)
+  g++ -g -O0 move.cpp -o prog && CVIZ_PROG=./prog CVIZ_SRC=move.cpp CVIZ_OUT=t.json \
+    CVIZ_STDOUT=out.txt CVIZ_MAX=800 gdb -batch -x cstep_gdb.py
+
+LIMITS AND KNOWN PROBLEMS
+  - Programs that read stdin interactively or loop for long stop at the step cap or the timeout.
+  - cs374-tutorial-c-for-flex-bison-1 produces no gdb steps (its main is in generated code).
 """
 import json
 import os

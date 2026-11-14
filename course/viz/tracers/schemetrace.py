@@ -11,6 +11,27 @@ when, unless, begin, set!, quote and ', and, or, numbers, strings, #t/#f, charac
 and the usual list, arithmetic, comparison, string and output procedures.
 
 Usage:  python3 schemetrace.py PROGRAM.scm [--max-steps N] > trace.json
+
+PIPELINE
+  Called by driver.py in the scheme runner (viz=env, lang=scheme), which also runs the program in
+  Guile through cviz-repl.scm; and by the viewer in the browser (Pyodide) for Edit and Run.
+
+TRACE FIELDS WRITTEN
+  kind "env", language "scheme", source, stdout, error, truncated, approximate, and steps:
+  {expr, note, env, chain: [env ids], frames: {id: {name, parent, vars}}, closures: {id: {name,
+   params, env, body}}, out}. A value is {"p": printed} or {"c": closure id}. driver.py adds
+  reference_stdout (Guile's output) and sets approximate when the two differ.
+
+OPTIONS  --max-steps N (default 800).   ENVIRONMENT  none.
+
+EXAMPLES
+  python3 schemetrace.py closures.scm > closures.json
+  # in the browser:  json.dumps(schemetrace.trace_source(code, 800))
+
+LIMITS AND KNOWN PROBLEMS
+  - A teaching subset, not full Scheme: no call/cc, macros, vectors or tail-call guarantees.
+  - When its output differs from Guile's the trace is kept but marked approximate (2 CS374
+    examples on 2026-11-14), and Guile's output is the one build --check compares.
 """
 import json
 import sys

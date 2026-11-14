@@ -7,6 +7,26 @@ remaining input. It also returns bison's state graph (DOT, from --graph) and the
 builds the parse tree from the shift and reduce sequence.
 
 Usage:  python3 bisontrace.py DIR_OR_Y_FILE --input "2*3+4" > trace.json
+
+PIPELINE
+  driver.py (flexbison runner) for viz=bison examples and the grammars listed in
+  viz/manifest.json; code-viz run DIR --viz bison --input "..." for one grammar.
+
+TRACE FIELDS WRITTEN
+  kind "bison", language "flexbison", source, input, rules, graph (bison --graph DOT), stdout,
+  error, truncated, and steps: {action, token, stack, stack_after, state, tree}.
+
+OPTIONS  --input TEXT (the string to parse; required).   ENVIRONMENT  none.
+
+EXAMPLES
+  python3 bisontrace.py files/examples/mininote --input "x = 2 * 3 + 4" > t.json
+  python3 bisontrace.py calc.y --input "1 + 2 + 3" > t.json
+
+LIMITS AND KNOWN PROBLEMS
+  - Grammars must build with bison 3.8 and gcc in the runner; a grammar that needs other files
+    must sit in one folder with them.
+  - The viewer draws the full state graph with Graphviz in the browser (viz.js); large grammars
+    are slow to lay out on a phone.
 """
 import glob
 import json

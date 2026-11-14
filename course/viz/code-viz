@@ -30,7 +30,7 @@ LABELS
 USAGE EXAMPLES
   # 1. What is in this course? Lists labeled examples and suggests labels for runnable-looking blocks.
   code-viz catalog
-  code-viz catalog --page _pages/Activities/liascript-scopechains.md
+  code-viz catalog --page _pages/Activities/liascript-scope-chains.md
 
   # 2. Label the suggestions. --try runs each candidate first and labels only those that run
   #    cleanly; --links also adds a "Visualize this example" link under each labeled block.
@@ -38,7 +38,7 @@ USAGE EXAMPLES
   code-viz label --try --links --lang scheme --page _pages/Activities/liascript-scheme.md
 
   # 3. Run one example and write its trace (by id, or any file).
-  code-viz run cs374-liascript-scopechains-3
+  code-viz run cs374-liascript-scope-chains-3
   code-viz run files/examples/mininote --viz bison --input "x = 2 * 3 + 4"
   code-viz run files/dotty/ends_in_ab.dot --input abab
   code-viz run my_closure.py              # a file outside the site: traced and printed as JSON
@@ -55,8 +55,45 @@ USAGE EXAMPLES
 
   # 6. Live mode: serve the viewer on a port; examples can be edited and re-run.
   code-viz serve                         # http://localhost:8765/viz/
-  code-viz serve cs374-liascript-closures-2 --port 9000
+  code-viz serve cs374-liascript-scope-chains-9 --port 9000
   code-viz serve my_closure.py           # trace one file and open it in the viewer
+
+  # 7. Student mode: what students open on their own phone or laptop (no setup, nothing installed).
+  #    The student link is <site>/viz/?student=1#<id>. Python, Scheme and lambda examples can be
+  #    edited and re-run in the browser; C, bison, agent and shell examples replay read-only.
+  #    In class: open the example in the teacher view and press QR to project its QR code.
+  https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/?student=1#cs374-liascript-scope-chains-9
+
+  # 8. QR codes for slides and handouts: viz/qr/<id>.svg and .png (made in a throwaway container).
+  code-viz qr cs374-liascript-scope-chains-9                 # writes viz/qr/cs374-liascript-scope-chains-9.svg/.png
+  code-viz qr cs374-liascript-lambdacalculus2-11 --snippet          # also prints a Markdown block for a deck
+  code-viz qr cs357-liascript-observability-1 --print      # only print the student link
+  code-viz --host bill@10.0.0.26 qr cs374-liascript-scope-chains-9 --scale 14 --out /tmp/qr
+
+LAMBDA DIRECTIVES (in a lambda block)
+  NAME = term        a definition used by the last line
+  -- free: B C       keep B and C as plain variables instead of the predefined combinators
+  Predefined names (TRUE, FALSE, AND, OR, NOT, IF, ZERO..FOUR, SUCC, PLUS, MULT, ISZERO, PAIR, FST,
+  SND, I, K, KI, S, C, B, OMEGA) replace matching free names; the viewer lists the ones a term used.
+
+ENVIRONMENT
+  CODE_VIZ_HOST   user@host to run containers on over SSH (same as --host), e.g. bill@10.0.0.26
+  OLLAMA_HOST     where agent examples reach Ollama inside the agents runner (default http://ollama:11434)
+
+KNOWN PROBLEMS AND LIMITS
+  - Step traces stop at 800 steps (lambda: 200) and are marked truncated.
+  - Agent recording needs a container named or aliased "ollama" on --ollama-network (start it with
+    --network-alias ollama), or OLLAMA_HOST; code-viz warns when it finds none. Model output varies,
+    so agent outputs are never compared, and outputs with timestamps always look changed.
+  - Runner images are built with --network host (downloads timed out on minipc's default bridge);
+    examples themselves always run with --network none (agents: the Ollama network only).
+  - build writes traces deterministically and leaves unchanged traces and index.json alone, so
+    build --check on an unchanged repo leaves git clean (fixed 2026-11-14; before, every trace
+    and index.json were rewritten).
+  - Lambda: a variable named like a predefined combinator (B, C, I, K, S) is replaced by it unless
+    the block says "-- free: B" or uses lowercase names.
+  - The 8 CS374 Mini-language blocks have no interpreter in the repo; Haskell and OCaml run whole
+    (no steps) and none qualified yet; cs374-tutorial-c-for-flex-bison-1 gives no gdb steps.
 
 WHERE THINGS RUN
   Containers run where Docker is: locally (a laptop with Docker, or GitHub Actions), or on another
@@ -68,6 +105,7 @@ WHERE THINGS RUN
 
 OUTPUT
   viz/index.html, viz/viewer.js, viz/viewer.css     the viewer (static; no server needed)
+  viz/qr/<id>.svg, viz/qr/<id>.png                   QR codes of student links (code-viz qr)
   viz/traces/<id>.json.gz                            one trace per example, gzipped (format: README.md)
   viz/expected/<id>.out                              the expected output, checked by build --check
   viz/index.json, viz/catalog.json, viz/manifest.json
@@ -295,9 +333,29 @@ class Docker:
         if self.sh(["image", "inspect", tag], check=False).returncode != 0:
             ctx = self.remote_dir(os.path.join(RUNNERS, runner), f"runner-{runner}")
             print(f"  building runner image {tag} ...", flush=True)
-            self.sh(["build", "-q", "--label", "code-viz=1", "-t", tag, ctx], timeout=3600)
+            # --network host: on minipc, downloads during docker build time out on the default bridge
+            # (found with the agents image, 2026-11-14). Only the build uses it; runs stay --network none.
+            self.sh(["build", "-q", "--network", "host", "--label", "code-viz=1", "-t", tag, ctx], timeout=3600)
         self.built[runner] = tag
         return tag
+
+    def check_ollama(self):
+        """Agent examples reach Ollama at http://ollama:11434 (or $OLLAMA_HOST), so the network given
+        with --ollama-network needs a container answering to the name "ollama". Without it a
+        recording "succeeds" with only connection errors, so warn before running."""
+        if not self.ollama_network or os.environ.get("OLLAMA_HOST"):
+            return True
+        r = self.sh(["network", "inspect", self.ollama_network, "--format",
+                     "{{range .Containers}}{{.Name}} {{end}}"], check=False)
+        names = r.stdout.split() if r.returncode == 0 else []
+        for n in names:
+            q = self.sh(["inspect", n, "--format",
+                         "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}={{join $v.Aliases \",\"}};{{end}}"], check=False)
+            if n == "ollama" or f"{self.ollama_network}=" in q.stdout and "ollama" in q.stdout.split(f"{self.ollama_network}=")[1].split(";")[0].split(","):
+                return True
+        print(f"  WARNING: no container named or aliased 'ollama' on network {self.ollama_network}; "
+              "start Ollama with --network-alias ollama (see code-viz --help), or set OLLAMA_HOST", flush=True)
+        return False
 
     def run_batch(self, runner, jobs, src_dir):
         """Run a batch of jobs in one container; returns {id: trace}."""
@@ -305,6 +363,8 @@ class Docker:
         shutil.copytree(src_dir, os.path.join(work, "src"), dirs_exist_ok=True)
         json.dump(jobs, open(os.path.join(work, "jobs.json"), "w"))
         tag = self.image(runner)
+        if runner == "agents":
+            self.check_ollama()
         name = f"cviz-{runner}-{int(time.time())}-{os.getpid()}"
         rwork = self.remote_dir(work, name)
         rtr = self.remote_dir(TRACERS, "tracers")
@@ -556,12 +616,23 @@ def compact(t):
 
 
 def save_trace(path, t):
-    """Traces are written gzipped (traces/<id>.json.gz); the viewer decompresses them."""
-    data = json.dumps(compact(t), separators=(",", ":")).encode()
-    with gzip.open(path + ".gz", "wb", compresslevel=9) as fh:
+    """Traces are written gzipped (traces/<id>.json.gz); the viewer decompresses them. The gzip
+    header carries no timestamp (mtime=0) and an unchanged trace is not rewritten, so a build
+    (or build --check) whose examples did not change leaves git clean."""
+    data = json.dumps(compact(t), separators=(",", ":"), sort_keys=True).encode()
+    gz = path + ".gz"
+    if os.path.exists(gz):
+        try:
+            with gzip.open(gz, "rb") as fh:
+                if fh.read() == data:
+                    return False
+        except OSError:
+            pass
+    with open(gz, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as fh:
         fh.write(data)
     if os.path.exists(path):
         os.remove(path)
+    return True
 
 
 def norm(text):
@@ -628,9 +699,12 @@ def write_site(root, info, traces, jobs, a):
         page_url = f"{info['url']}/{os.path.splitext(j['page'].replace('_pages/', ''))[0]}" if j["page"].startswith("_pages") else ""
         index[j["id"]] = {"id": j["id"], "viz": j["viz"], "lang": j["lang"], "page": j["page"], "line": j["line"],
                           "page_url": page_url, "error": t.get("error"), "steps": len(t.get("steps") or [])}
-    json.dump({"course": info["course"], "site": info["url"], "built": time.strftime("%Y-%m-%d %H:%M"),
-               "examples": sorted(index.values(), key=lambda e: (e["page"], e["line"]))},
-              open(index_path, "w"), indent=1)
+    examples = sorted(index.values(), key=lambda e: (e["page"], e["line"]))
+    old = json.load(open(index_path)) if os.path.exists(index_path) else {}
+    # Keep the old build time (and the file untouched) when no example changed.
+    if old.get("examples") != examples or old.get("site") != info["url"]:
+        json.dump({"course": info["course"], "site": info["url"], "built": time.strftime("%Y-%m-%d %H:%M"),
+                   "examples": examples}, open(index_path, "w"), indent=1)
     return changed, failed
 
 
@@ -792,6 +866,66 @@ def cmd_serve(a):
     return 0
 
 
+def student_url(info, vid):
+    """The student-mode link for an example: <site>/viz/?student=1#<id>."""
+    return f"{info['url']}/viz/?student=1#{vid}"
+
+
+def cmd_qr(a):
+    """QR codes for students: each id gets viz/qr/<id>.svg and .png (or --out DIR), made in a
+    throwaway "qr" runner container (segno, no network). --print only prints the links;
+    --snippet also prints a Markdown block for a deck or page (image plus link)."""
+    root = repo_root()
+    info = site_info(root)
+    if not info["url"]:
+        print("no url in _config.yml; cannot make student links", file=sys.stderr)
+        return 2
+    known = {b["label"]["id"] for b in all_blocks(root) if b.get("label")}
+    idx = os.path.join(root, "viz", "index.json")
+    if os.path.exists(idx):
+        known |= {e["id"] for e in json.load(open(idx)).get("examples", [])}
+    bad = [i for i in a.ids if i not in known]
+    if bad and not a.force:
+        print("unknown example id(s): " + ", ".join(bad) + " (code-viz catalog lists them; --force skips this check)", file=sys.stderr)
+        return 2
+    urls = {i: student_url(info, i) for i in a.ids}
+    if a.print_only:
+        for i, u in urls.items():
+            print(f"{i}  {u}")
+        return 0
+    out = os.path.abspath(a.out or os.path.join(root, "viz", "qr"))
+    os.makedirs(out, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="code-viz-qr-")
+    json.dump(urls, open(os.path.join(work, "urls.json"), "w"))
+    docker = Docker(a.host, keep=a.keep_images)
+    try:
+        tag = docker.image("qr")
+        rwork = docker.remote_dir(work, f"qr-{int(time.time())}-{os.getpid()}")
+        script = ("import json, segno\n"
+                  "for i, u in json.load(open('/out/urls.json')).items():\n"
+                  "    q = segno.make(u, error='m')\n"
+                  f"    q.save('/out/' + i + '.svg', scale={a.scale}, border=2)\n"
+                  f"    q.save('/out/' + i + '.png', scale={a.scale}, border=2)\n")
+        docker.sh(["run", "--rm", "--network", "none", "--cpus", "1", "--memory", "256m",
+                   "-v", f"{rwork}:/out", tag, "python3", "-c", script], timeout=600)
+        docker.fetch_dir(rwork, work)
+        docker.retire(rwork)
+    finally:
+        docker.cleanup()
+    for i, u in urls.items():
+        for ext in ("svg", "png"):
+            src = os.path.join(work, f"{i}.{ext}")
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(out, f"{i}.{ext}"))
+        print(f"{i}  {u}  ->  {os.path.relpath(os.path.join(out, i + '.svg'), root)} (.png too)")
+        if a.snippet:
+            rel = os.path.relpath(out, root).replace(os.sep, "/")
+            print(f"\n<!-- code-viz QR for {i} -->\n![Scan to open this example on your phone]({info['url']}/{rel}/{i}.svg)\n"
+                  f"[Open this example]({u})\n")
+    shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog="code-viz", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", help="run containers on this machine over SSH (user@host); default CODE_VIZ_HOST or local Docker")
@@ -817,6 +951,13 @@ def main():
     b.add_argument("--ollama-network"); b.set_defaults(fn=cmd_build)
     u = sub.add_parser("unlabel", help="remove examples (label, link, trace)")
     u.add_argument("ids", nargs="+"); u.set_defaults(fn=cmd_unlabel)
+    q = sub.add_parser("qr", help="QR codes (SVG and PNG) for examples' student links")
+    q.add_argument("ids", nargs="+"); q.add_argument("--out", help="folder (default viz/qr/)")
+    q.add_argument("--scale", type=int, default=10, help="pixels per QR module (default 10)")
+    q.add_argument("--print", dest="print_only", action="store_true", help="only print the student links")
+    q.add_argument("--snippet", action="store_true", help="also print a Markdown block for a deck or page")
+    q.add_argument("--force", action="store_true", help="allow ids that are not labeled examples")
+    q.set_defaults(fn=cmd_qr)
     s = sub.add_parser("serve", help="serve the viewer with live re-runs")
     s.add_argument("target", nargs="?"); s.add_argument("--port", type=int, default=8765); s.add_argument("--input")
     s.add_argument("--public", action="store_true", help="listen on all interfaces, not just this machine")

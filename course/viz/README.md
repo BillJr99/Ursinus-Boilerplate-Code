@@ -18,11 +18,11 @@ course/viz/
 
 A code block is an example when a hidden comment sits on the line above its fence:
 
-    <!-- run: id=cs374-liascript-scopechains-3 viz=env -->
+    <!-- run: id=cs374-liascript-scope-chains-3 viz=env -->
     ```python
     ...
     ```
-    [Visualize this example](https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/#cs374-liascript-scopechains-3) <!-- code-viz link -->
+    [Visualize this example](https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/#cs374-liascript-scope-chains-3) <!-- code-viz link -->
 
 `code-viz label --try --links` writes both lines. The link goes after any LiaScript run macro
 (`@LIA.eval(...)`, `@Pyodide.eval`) that follows the fence, so the deck's own Run button keeps
@@ -42,6 +42,30 @@ working. Bison grammars and automata, which are files rather than blocks, are li
 | agent | Python calling Ollama | a timeline of model calls (model, prompt or messages, reply, tokens, seconds), embeddings, retrieval (the query, every passage ranked with its source and score, top k marked), the prompt assembled from the retrieved passages, tool calls and printed output, with the program line behind each event highlighted; recorded once on a machine with Ollama and replayed |
 | cast | shell | a terminal replay of each command and its output |
 | plain | Haskell, Prolog, OCaml, Mini | the program and its output (no step trace) |
+
+## Students: student mode and QR codes
+
+Students open an example on their own phone or laptop with no setup: the student link is
+`<site>/viz/?student=1#<id>` (for example
+https://billjr99.github.io/Ursinus-CS374-Fall2026/viz/?student=1#cs374-liascript-scope-chains-9).
+Student mode is one column with large text and the step controls pinned to the bottom of the screen.
+Python, Scheme and lambda examples have "Edit and run": the code runs in the student's browser
+(Pyodide), and Reset goes back to the original. C, bison, automaton, agent and shell examples replay
+their recorded run, read-only. A student's edits stay in their own browser (localStorage); nothing is
+sent anywhere.
+
+In class, open the example in the normal (teacher) view and press **QR**: a large QR code of the
+student link fills the screen for the projector (Escape or Close dismisses it). For slides and
+handouts, `code-viz qr <id> [<id> ...]` writes `viz/qr/<id>.svg` and `.png` (made in a throwaway
+container; `--snippet` also prints a Markdown block, `--print` only prints the links). Commit
+`viz/qr/` so the course site serves the images.
+
+## Lambda blocks: predefined names
+
+Predefined Church encodings and combinators (TRUE, FALSE, AND, OR, NOT, IF, ZERO to FOUR, SUCC,
+PLUS, MULT, ISZERO, PAIR, FST, SND, I, K, KI, S, C, B, OMEGA) replace matching free names, so a
+variable called B, C, I, K or S becomes that combinator. The viewer lists the predefined names a
+term used. To keep one as a variable, add a line `-- free: B` to the block (or use lowercase names).
 
 ## Trace format (version 1)
 

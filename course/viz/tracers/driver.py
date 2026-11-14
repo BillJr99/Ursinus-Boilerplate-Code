@@ -6,6 +6,31 @@ runner, which can reach Ollama only), capped CPU, memory and process count, and 
 
 Job fields: id, viz (env, lambda, c, bison, automaton, agent, cast, plain), lang, file (relative to
 /work/src), input (optional stdin or automaton/bison input), timeout (seconds), max_steps.
+
+PIPELINE
+  code-viz (run, build, label --try, serve) groups examples by runner, writes /work/jobs.json and
+  /work/src/<files>, and starts one container per runner with this script as its command. The
+  container mounts the tracers read-only at /viz/tracers and /work read-write; code-viz copies
+  /work/out back and moves the staging folder to ~/scratch/code-viz on the Docker host.
+
+INPUT  /work/jobs.json: [{id, viz, lang, file, input?, args?, timeout, max_steps}]
+OUTPUT /work/out/<id>.json, one trace per job (trace format: README.md, "Trace format"). Every
+  trace has version, kind, language, source, steps, stdout, error, truncated. This driver adds:
+  for Scheme, approximate (true when the model interpreter's output differs from Guile's) and
+  reference_stdout (Guile's output); for shell, cast; for plain examples, only stdout and error.
+
+DISPATCH (viz -> tracer)
+  env + python -> pytrace.py; env + scheme -> schemetrace.py (and Guile via cviz-repl.scm);
+  lambda -> lambdatrace.py; c -> gcc/g++ -g then gdb -batch -x cstep_gdb.py; bison ->
+  bisontrace.py; automaton -> automaton.py; agent -> agentrec.py; cast -> shellcast.py;
+  plain -> compile or interpret with the runner's toolchain and capture output.
+
+LIMITS AND KNOWN PROBLEMS
+  - Each job has its own timeout (default 15 s; the container's total is the sum plus 60 s).
+  - Step traces stop at max_steps (default 800) and set truncated; long loops and deep
+    recursion (Y vs Z in CS374) end there, so the viewer shows the first 800 steps only.
+  - Mini-language examples have no interpreter in the repo, so they are not runnable.
+  - Haskell and OCaml run as plain programs only; no examples in CS357 or CS374 qualified yet.
 """
 import json
 import os

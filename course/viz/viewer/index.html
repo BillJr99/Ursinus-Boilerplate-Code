@@ -1,9 +1,16 @@
 <!doctype html>
+<!--
+  code-viz viewer page (index.html). Copied into a course site's viz/ folder by code-viz build and
+  serve. All behaviour is in viewer.js and all styling in viewer.css (see their headers). Addresses:
+  viz/#<id> (teacher view), viz/?student=1#<id> (student mode, what the QR code opens),
+  viz/?step=N#<id> (open at step N). External scripts are pinned: viz.js 2.1.2, qrcode-generator 1.4.4.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>code-viz</title>
+<meta name="robots" content="noindex">
 <link rel="stylesheet" href="viewer.css">
 </head>
 <body>
@@ -27,6 +34,8 @@
       <span id="extra" class="extra"></span>
       <span class="spacer"></span>
       <button id="edit" title="Edit the code and run it again">Edit</button>
+      <button id="reset" title="Back to the original example" hidden>Reset</button>
+      <button id="qr" class="teacher-only" title="Show a QR code students scan to open this example on their own phone or laptop">QR</button>
     </div>
     <div class="cols">
       <div class="left">
@@ -46,8 +55,17 @@
     </div>
   </section>
 </main>
+<div id="qrdialog" class="qrdialog" hidden>
+  <div class="qrbox">
+    <div id="qrimg" class="qrimg"></div>
+    <p class="qrtitle">Scan to open this example</p>
+    <p id="qrurl" class="qrurl"></p>
+    <button id="qrclose">Close</button>
+  </div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/viz.js/2.1.2/viz.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/viz.js/2.1.2/full.render.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>
