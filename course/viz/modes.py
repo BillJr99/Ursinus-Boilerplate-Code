@@ -1214,9 +1214,10 @@ def _heading_above(root, b):
 def _no_dash(title):
     """Bill's no-em-dash rule for titles taken from deck headings (2026-11-14): a dash used as a
     dash (an em or en dash with spaces around it, a spaced hyphen, or an unspaced em dash) becomes a
-    colon the first time and a comma after that ("Threshold Tuning — Metrics" -> "Threshold Tuning:
-    Metrics"; a heading that already has a colon gets commas). An unspaced en dash between letters
-    or digits is a range or a compound ("Precision–Recall", "10–20") and becomes a plain hyphen."""
+    colon the first time and a comma after that ("Threshold Tuning <em dash> Metrics" becomes "Threshold
+    Tuning: Metrics"; a heading that already has a colon gets commas). An unspaced en dash between
+    letters or digits is a range or a compound ("Precision<en dash>Recall", "10<en dash>20") and becomes
+    a plain hyphen."""
     t = re.sub(r"(?<=[A-Za-z0-9])–(?=[A-Za-z0-9])", "-", title)
     parts = re.split(r"\s+[—–-]\s+|\s*—\s*|\s+–\s*|\s*–\s+", t)
     parts = [p.strip() for p in parts if p.strip()]
