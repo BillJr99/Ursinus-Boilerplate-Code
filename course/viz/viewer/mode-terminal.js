@@ -4,7 +4,7 @@
 (function () {
   'use strict';
   const el = id => document.getElementById(id);
-  const S = {id:null,time:0,duration:0,playing:false,speed:1,frame:0,events:[],markers:[],sess:null,epoch:0};
+  const S = {id:null,time:0,duration:0,playing:false,speed:1,frame:0,events:[],markers:[],sess:null,epoch:0,selectedMarker:null};
   let saved=[], copyTimer=null, observer=null, motion=null, motionChanged=null;
   const reduced=()=>window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function resetCopy() {
@@ -33,14 +33,33 @@
     return {events,markers,duration:Math.ceil(at*1000)/1000};
   }
   function plain(raw) {
-    raw=raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'');
-    const lines=['']; let row=0,col=0;
-    for(const c of raw) {
-      if(c==='\n') {row++;lines[row]='';col=0;}
-      else if(c==='\r') col=0;
+    // Keep erase-in-line sequences until the cursor-aware pass below. Other CSI
+    // sequences (including colour) remain presentation-only in this line renderer.
+    raw=raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'');
+    const lines=['']; let row=0,col=0,returned=false;
+    const tokens=raw.match(/\x1b\[[0-?]*[ -/]*[@-~]|[\s\S]/gu)||[];
+    for(const c of tokens) {
+      if(c.startsWith('\x1b[')) {
+        const erase=/^\x1b\[([012]?)K$/.exec(c);
+        if(erase) {
+          const mode=Number(erase[1]||0),line=lines[row];
+          if(mode===0)lines[row]=line.slice(0,col);
+          else if(mode===1)lines[row]=' '.repeat(Math.min(col+1,line.length))+line.slice(col+1);
+          else lines[row]='';
+          returned=false;
+        }
+        continue;
+      }
+      if(c==='\n') {row++;lines[row]='';col=0;returned=false;}
+      else if(c==='\r') {col=0;returned=true;}
       else if(c==='\b') col=Math.max(0,col-1);
-      else if(c==='\t') {const n=8-col%8;lines[row]+=' '.repeat(n);col+=n;}
-      else if(c>=' ') {const line=lines[row];lines[row]=line.slice(0,col).padEnd(col,' ')+c+line.slice(col+1);col++;}
+      else if(c==='\t'||c>=' ') {
+        // Delay the redraw until text arrives, so CRLF preserves the finished line.
+        if(returned) {lines[row]='';returned=false;}
+        const text=c==='\t'?' '.repeat(8-col%8):c,line=lines[row];
+        lines[row]=line.slice(0,col).padEnd(col,' ')+text+line.slice(col+text.length);
+        col+=text.length;
+      }
     }
     return lines.join('\n');
   }
@@ -54,13 +73,15 @@
     if(el('terminal-status').textContent!==status)el('terminal-status').textContent=status;
     let active=-1;
     S.markers.forEach((m,i)=>{if(m.at<=S.time) active=i;});
+    // A clicked marker owns the note until playback or another seek takes over.
+    if(S.selectedMarker!==null)active=S.selectedMarker;
     const note=active>=0?S.markers[active].note:S.sess.description||'';
     if(el('terminal-note').textContent!==note)el('terminal-note').textContent=note;
     document.querySelectorAll('.terminal-marker').forEach((b,i)=>{b.setAttribute('aria-current',String(i===active));});
   }
-  function seek(t) {resetCopy();pause();S.time=Math.max(0,Math.min(Number(t)||0,S.duration));draw();}
+  function seek(t,marker=null) {resetCopy();pause();S.selectedMarker=marker;S.time=Math.max(0,Math.min(Number(t)||0,S.duration));draw();}
   function play() {
-    resetCopy();
+    resetCopy();S.selectedMarker=null;
     if(reduced()) {seek(S.duration);return;}
     S.started=true;
     if(S.playing) return pause();
@@ -83,7 +104,7 @@
     const rows=(await response.text()).trim().split('\n').map(x=>JSON.parse(x)),header=rows.shift();
     if(header.version!==2||!rows.every(e=>Array.isArray(e)&&e.length===3&&Number.isFinite(e[0])&&e[0]>=0&&typeof e[2]==='string')) throw new Error('Invalid asciicast v2 recording');
     if(epoch!==S.loadEpoch) return;
-    S.id=ctx.id;S.sess=sess;S.events=rows;S.started=false;
+    S.id=ctx.id;S.sess=sess;S.events=rows;S.started=false;S.selectedMarker=null;
     S.scripted=sess.provenance==='scripted';
     if(header.code_viz_provenance&&header.code_viz_provenance!==(sess.provenance||'recorded'))throw new Error('Terminal provenance mismatch');
     S.duration=Math.max(Number(header.duration)||0,...rows.map(e=>e[0]));
@@ -117,7 +138,7 @@
     panel.append(node('p',{id:'terminal-provenance',role:'note'},S.scripted?'Illustration: typical output; yours may differ':'Recorded output'));
     panel.append(node('pre',{id:'terminal-screen',tabindex:0,'aria-label':S.scripted?'Illustrative terminal output':'Recorded terminal output'}));
     const notes=node('div',{class:'terminal-notes'}),markers=node('div',{class:'terminal-markers','aria-label':'Recording markers'});
-    S.markers.forEach(m=>{const b=node('button',{class:'terminal-marker',type:'button'},m.title);b.onclick=()=>seek(m.at);markers.append(b);});notes.append(markers,node('p',{id:'terminal-note','aria-live':'polite'}));panel.append(notes);
+    S.markers.forEach((m,i)=>{const b=node('button',{class:'terminal-marker',type:'button'},m.title);b.onclick=()=>seek(m.at,i);markers.append(b);});notes.append(markers,node('p',{id:'terminal-note','aria-live':'polite'}));panel.append(notes);
     const details=node('details',{id:'terminal-transcript-details'});details.append(node('summary',{},'Selectable transcript'),node('pre',{id:'terminal-transcript',tabindex:0},plain(rows.filter(e=>e[1]==='o').map(e=>e[2]).join(''))));panel.append(details);
     el('example').append(panel);draw();
     const onMotion=()=>{pause();toggle.disabled=reduced();if(reduced()) {S.time=S.duration;draw();}};
