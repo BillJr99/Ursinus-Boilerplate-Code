@@ -106,7 +106,10 @@ def make_user(spec):
         return None
     name, uid = (spec, 1000) if not spec.isdigit() else ("student", int(spec))
     subprocess.run(["groupadd", "-g", str(uid), name], capture_output=True)
-    subprocess.run(["useradd", "-u", str(uid), "-g", str(uid), "-M", "-d", WORK_DIR[0], "-s", "/bin/bash", name], capture_output=True)
+    r = subprocess.run(["useradd", "-u", str(uid), "-g", str(uid), "-M", "-d", WORK_DIR[0], "-s", "/bin/bash", name],
+                       capture_output=True, text=True)
+    if r.returncode not in (0, 9):          # 9: the name is taken already
+        print(f"sessrec: could not create user {name} ({r.stderr.strip()}); commands still run as uid {uid}", file=sys.stderr)
     return name, uid, uid
 
 
@@ -219,6 +222,7 @@ def main():
     if scn.get("user") and shell:
         name, uid = (scn["user"], 1000) if not scn["user"].isdigit() else ("student", int(scn["user"]))
         user = (name, uid, uid)
+        name = shlex.quote(name)   # the schema allows only plain names; quoted anyway
         # Make the same user in the shell image when it has the tools (Debian useradd, Alpine adduser).
         subprocess.run(["docker", "exec", shell, "sh", "-c",
                         f"(groupadd -g {uid} {name} && useradd -u {uid} -g {uid} -M -d {shlex.quote(work)} {name}) 2>/dev/null"
