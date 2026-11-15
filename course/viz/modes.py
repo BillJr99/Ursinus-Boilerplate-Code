@@ -1207,8 +1207,24 @@ def _heading_above(root, b):
     for k in range(min(b.get("start", 0), len(lines)) - 1, -1, -1):
         m = re.match(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$", lines[k])
         if m:
-            return re.sub(r"[`*_]", "", m.group(1)).strip()[:80]
+            return _no_dash(re.sub(r"[`*_]", "", m.group(1)).strip())[:80]
     return ""
+
+
+def _no_dash(title):
+    """Bill's no-em-dash rule for titles taken from deck headings (2026-11-14): a dash used as a
+    dash (an em or en dash with spaces around it, a spaced hyphen, or an unspaced em dash) becomes a
+    colon the first time and a comma after that ("Threshold Tuning — Metrics" -> "Threshold Tuning:
+    Metrics"; a heading that already has a colon gets commas). An unspaced en dash between letters
+    or digits is a range or a compound ("Precision–Recall", "10–20") and becomes a plain hyphen."""
+    t = re.sub(r"(?<=[A-Za-z0-9])–(?=[A-Za-z0-9])", "-", title)
+    parts = re.split(r"\s+[—–-]\s+|\s*—\s*|\s+–\s*|\s*–\s+", t)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) <= 1:
+        return t.strip()
+    head = parts[0].rstrip(":,")
+    sep = ", " if ":" in head else ": "
+    return head + sep + ", ".join(p.rstrip(":,") for p in parts[1:])
 
 
 def cmd_skeleton(root, a, codes, blocks):

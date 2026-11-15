@@ -1037,7 +1037,9 @@ Each skeleton has `"source": "skeleton"` and `"reviewed": false`, and passes `to
 written (a step the checks reject is dropped). A tour whose `source` is anything else (a model's
 draft, or Bill's edit) is never overwritten. A skeleton is not rewritten either, unless `--refresh`
 is given, which rewrites only skeletons. The title is the heading above the example on its page
-(a notebook's file name for notebook cells).
+(a notebook's file name for notebook cells), with any dash used as a dash turned into a colon, then commas
+(Bill's no-em-dash rule: "Tuning — Metrics" becomes "Tuning: Metrics"); an unspaced en dash in a range or
+compound ("Precision–Recall", "10–20") becomes a hyphen.
 
 `tour draft` writes, for each example, a prompt with the code (numbered), the deck's own text before
 and after it, the trace's first visit to each line, the format above, and Bill's writing rules in
