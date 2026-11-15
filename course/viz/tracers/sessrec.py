@@ -9,8 +9,9 @@ Runs the scenario's commands in order, one bash per command, under a pseudo-term
 by 30 rows with HOME set to the work folder, so `docker run -it ...` and other programs that want a
 terminal work with nobody typing: their input is at end of file. The shell's working folder and
 exported variables carry over from one command to the next (saved in /tmp/cviz after each command),
-so `cd` and `export` behave as in one terminal. With --shell, each command runs inside that container
-(a scenario `shell` image, started by code-viz record in the sandbox) through `docker exec -it`.
+so `cd` and `export` behave as in one terminal. Commands run in bash. With --shell, each command runs
+inside that container (a scenario `shell` image, started by code-viz record in the sandbox) through
+`docker exec -it`, in bash when the image has it, else in the image's sh.
 
 After each command it saves the output as the terminal showed it, as timestamped chunks (`cast`:
 [[seconds since the command started, text], ...], like asciinema's cast v2), so the viewer can replay
@@ -100,8 +101,12 @@ def run(cmd, work, timeout, shell):
     tail = "\n__rc=$?; pwd > /tmp/cviz/cwd; export -p > /tmp/cviz/env; exit $__rc"
     script = prelude + cmd + tail
     if shell:
+        # Tutorials assume bash (echo -e, [[ ]], arrays), so use it when the image has it; images without
+        # bash (alpine and other minimal ones) fall back to their sh.
+        inner = "stty cols %d rows %d 2>/dev/null; %s" % (COLS, ROWS, script)
         argv = ["docker", "exec", "-it", "-e", f"HOME={work}", "-e", f"COLUMNS={COLS}", "-e", f"LINES={ROWS}",
-                "-e", "TERM=xterm", shell, "sh", "-c", "stty cols %d rows %d 2>/dev/null; %s" % (COLS, ROWS, script)]
+                "-e", "TERM=xterm", shell, "sh", "-c",
+                'if command -v bash >/dev/null 2>&1; then exec bash -c "$1"; else exec sh -c "$1"; fi', "cviz", inner]
     else:
         argv = ["bash", "-c", script]
     env = dict(os.environ, HOME=work, TERM="xterm", COLUMNS=str(COLS), LINES=str(ROWS))

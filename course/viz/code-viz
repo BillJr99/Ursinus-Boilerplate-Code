@@ -1096,6 +1096,11 @@ How each command runs, so a recording looks like a student's terminal and does n
 - every command runs under a pseudo-terminal of a fixed size (100 columns by 30 rows) with its input
   at end of file, so `docker run -it ...` and other programs that want a terminal work without anyone
   typing; a command that waits for typed input sees end of file and goes on;
+- commands run in bash: in the recorder's own shell, and in a `shell` image whenever the image has
+  bash (`echo -e`, `[[ ]]` and arrays work as students expect); an image without bash uses its `sh`;
+- two recordings can run at once (two minipc slots): when one run's cleanup removes an image the other
+  still needs (the recorder image, a `shell` image, the sandbox or a scenario image), the other builds
+  or pulls it again and carries on;
 - the output is kept twice: `cast`, the terminal output as timestamped chunks (`[[seconds since the
   command started, text], ...]`, like asciinema's cast v2, control codes kept), which the viewer
   replays at the pace it ran; and `output`, plain text with the control codes removed and a `\r`

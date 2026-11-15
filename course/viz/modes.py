@@ -634,7 +634,7 @@ def _random_names(runs, commands):
     return out
 
 
-def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, session_tag, host_shell):
+def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, session_tag, host_shell, ensure_shell=None):
     """One fresh sandbox, the commands run in it, the raw steps back. `host_shell(cmd)` runs a shell
     command on the Docker host (for docker save | docker load)."""
     import shutil
@@ -652,6 +652,12 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
     shutil.copy(os.path.join(tracers, "sessrec.py"), local)
     rdir = docker.remote_dir(local, f"session-{tag}")
     inet, dind = f"{tag}-int", f"{tag}-dind"
+    # Another recording on this host may have removed an image it pulled after this one checked:
+    # pull it again (and remove it at cleanup, as this run then pulled it).
+    for img in [DIND_IMAGE] + list(scn.get("images") or []):
+        if docker.sh(["image", "inspect", img], check=False).returncode != 0:
+            docker.sh(["pull", "-q", img], timeout=1800)
+            docker.mine.add(img)
     try:
         # The sandbox and the recorder share one network of their own. It is --internal (no way out)
         # unless the scenario asks for the internet; the host's own networks are never touched.
@@ -670,6 +676,10 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
         # Images come from the host (pulled there, where downloads work) into the sandbox, so the
         # sandbox itself needs no internet unless the scenario asks for it.
         for img in list(scn.get("images") or []) + ([shell_tag] if shell_tag else []):
+            # Another recording on this host (two slots at once) may have removed a code-viz image
+            # this one built: build it again before loading it (section 15).
+            if img == shell_tag and ensure_shell:
+                ensure_shell()
             r = host_shell(f"{docker.prefix()} save {shlex_quote(img)} | {docker.prefix()} exec -i {dind} docker load")  # noqa: E501
             if r.returncode != 0:
                 raise RuntimeError(f"could not load {img} into the sandbox: {r.stderr[-300:]}")
@@ -682,10 +692,17 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
             shell_args = ["--shell", "cviz-shell", "--shell-image", shell_tag.split(":")[0]]
         rnet = ["--network", inet]
         total = 120 + len(commands) * int(scn.get("timeout", 120))
-        r = docker.sh(["run", "--rm", "--name", f"{tag}-rec", "--label", "code-viz=1", *rnet,
-                       "-e", "DOCKER_HOST=tcp://sandbox:2375", "-v", f"{rdir}:/rec", "-v", f"{rdir}/work:{work}", session_tag,
-                       "timeout", str(total), "python3", "/rec/sessrec.py", "/rec/scenario.json", "/rec/out.json", *shell_args],
-                      timeout=total + 120, check=False)
+        for attempt in range(3):
+            r = docker.sh(["run", "--rm", "--name", f"{tag}-rec" + (f"-{attempt}" if attempt else ""), "--label", "code-viz=1", *rnet,
+                           "-e", "DOCKER_HOST=tcp://sandbox:2375", "-v", f"{rdir}:/rec", "-v", f"{rdir}/work:{work}", session_tag,
+                           "timeout", str(total), "python3", "/rec/sessrec.py", "/rec/scenario.json", "/rec/out.json", *shell_args],
+                          timeout=total + 120, check=False)
+            # Another recording's cleanup may remove the shared recorder image between our build and
+            # this run (two slots at once), as with runner images: build it again and rerun.
+            if r.returncode == 0 or "Unable to find image" not in (r.stderr or ""):
+                break
+            print("  recorder image was removed by another run; building it again", flush=True)
+            session_tag = docker.image("session")
         docker.fetch_dir(rdir, local)
         p = os.path.join(local, "out.json")
         if not os.path.exists(p):
@@ -734,20 +751,28 @@ def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host
                 docker.sh(["pull", "-q", base], timeout=1800)
                 pulled.append(base)
             shell_tag = f"code-viz-shell:{_h.sha256(json.dumps(sh, sort_keys=True).encode()).hexdigest()[:12]}"
-            if docker.sh(["image", "inspect", shell_tag], check=False).returncode != 0:
-                import tempfile
-                ctx = tempfile.mkdtemp(prefix="code-viz-shell-")
-                lines = [f"FROM {base}"] + [f"RUN {c}" for c in sh.get("setup") or []]
-                open(os.path.join(ctx, "Dockerfile"), "w").write("\n".join(lines) + "\n")
-                rctx = docker.remote_dir(ctx, "shell-image")   # moves to ~/scratch at cleanup
-                docker.sh(["build", "-q", "--network", "host", "--label", "code-viz=1", "-t", shell_tag, rctx], timeout=3600)
-                docker.mine.add(shell_tag)
-                retire_local(ctx)
-        runs = [record_once(docker, scn["commands"], scn, tag, None, shell_tag, tracers, session_tag, host_shell)]
+        def ensure_shell():
+            """Build the scenario's shell image when it is missing: the first time, or after another
+            recording on this host (two slots at once) removed it."""
+            if not shell_tag or docker.sh(["image", "inspect", shell_tag], check=False).returncode == 0:
+                return
+            if docker.sh(["image", "inspect", base], check=False).returncode != 0:
+                docker.sh(["pull", "-q", base], timeout=1800)
+            import tempfile
+            ctx = tempfile.mkdtemp(prefix="code-viz-shell-")
+            lines = [f"FROM {base}"] + [f"RUN {c}" for c in sh.get("setup") or []]
+            open(os.path.join(ctx, "Dockerfile"), "w").write("\n".join(lines) + "\n")
+            rctx = docker.remote_dir(ctx, "shell-image")   # moves to ~/scratch at cleanup
+            docker.sh(["build", "-q", "--network", "host", "--label", "code-viz=1", "-t", shell_tag, rctx], timeout=3600)
+            docker.mine.add(shell_tag)
+            retire_local(ctx)
+
+        ensure_shell()
+        runs = [record_once(docker, scn["commands"], scn, tag, None, shell_tag, tracers, session_tag, host_shell, ensure_shell)]
         branches = []
         for b in doc.get("branches") or []:
             cmds = scn["commands"][:b["after"]] + b["commands"]
-            got = record_once(docker, cmds, scn, tag + "-" + b["name"][:12], None, shell_tag, tracers, session_tag, host_shell)
+            got = record_once(docker, cmds, scn, tag + "-" + b["name"][:12], None, shell_tag, tracers, session_tag, host_shell, ensure_shell)
             branches.append((b, got))
             runs.append(got)
     finally:
