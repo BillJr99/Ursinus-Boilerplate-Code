@@ -87,6 +87,34 @@ class TourTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "viz", "tours")))
 
 
+class SkeletonTests(unittest.TestCase):
+    def block(self, code, lang="python", viz="env", vid="ex-1"):
+        return {"label": {"id": vid, "viz": viz}, "lang": lang, "code": code, "page": "p.md", "start": 0}
+
+    def test_python_structure_and_facts(self):
+        code = "import math\n\ndef fib(n):\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfor i in range(3):\n    print(fib(i))"
+        t = M.skeleton_tour(tempfile.mkdtemp(), self.block(code), "Fibonacci")
+        notes = [s.get("description", "") for s in t["steps"]]
+        self.assertIn("Line 1 imports `math`.", notes)
+        self.assertIn("Lines 3-6 define `fib(n)`, which calls itself.", notes)
+        self.assertIn("Line 4 checks `n <= 1`.", notes)
+        self.assertTrue(any(n.startswith("Lines 8-9 run the main code and print") for n in notes))
+        self.assertEqual((t["source"], t["reviewed"]), ("skeleton", False))
+        self.assertFalse(any(s["kind"] == "predict" for s in t["steps"]))
+
+    def test_no_fact_without_evidence(self):
+        t = M.skeleton_tour(tempfile.mkdtemp(), self.block("def add(a, b):\n    return a + b\n\nprint(add(1, 2))"), "")
+        self.assertIn("Lines 1-2 define `add(a, b)`.", [s.get("description") for s in t["steps"]])
+
+    def test_show_has_no_run_steps_and_other_languages(self):
+        t = M.skeleton_tour(tempfile.mkdtemp(), self.block("int main() {\n  for (int i = 0; i < 3; i++) {\n    puts(\"x\");\n  }\n  return 0;\n}", "c", "show"), "")
+        kinds = {s["kind"] for s in t["steps"]}
+        self.assertEqual(kinds, {"reveal", "focus"})
+        self.assertIn("Lines 1-6 define `main`.", [s.get("description") for s in t["steps"]])
+        mips = M.skeleton_tour(tempfile.mkdtemp(), self.block("main:\n  li $v0, 10\n  syscall\nval:\n  .word 5", "mips", "show"), "")
+        self.assertIn("Lines 4-5 hold the data labeled `val`.", [s.get("description") for s in mips["steps"]])
+
+
 class SessionTests(unittest.TestCase):
     def doc(self, **scn):
         return {"version": 1, "id": "s-1", "title": "t", "scenario": dict({"commands": ["ls"]}, **scn)}
@@ -116,6 +144,11 @@ class MaskTests(unittest.TestCase):
         long = "0123456789abcdef" * 4
         out = m(f"{long} then {long[:12]} at 2026-11-14T10:00:00Z, Up 3 seconds, 2 minutes ago, eager_turing in /work/x, port 8080")
         self.assertEqual(out, "<id-1> then <id-1> at <time>, Up <time>, <time> ago, <name-1> in ~/x, port <p-1>")
+
+    def test_ls_dates(self):
+        m = M.Masker("/work", set(), [])
+        self.assertEqual(m("-rw-r--r-- 1 1000 1000 3 Nov 15 00:23 mine.txt and Jan  3  2025 old"),
+                         "-rw-r--r-- 1 1000 1000 3 <date> mine.txt and <date> old")
 
     def test_plain_and_eof_echo(self):
         self.assertEqual(M.plain("^@\x1b[32mgreen\x1b[0m\r\n10%\r50%\r100%\r\n"), "green\n100%\n")

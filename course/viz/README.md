@@ -1011,8 +1011,34 @@ Commands:
 
 ```
 code-viz tour check [ids] [-v]       check every tour (schema, lines inside the code, trace steps, stage ids)
+code-viz tour skeleton <ids> | --all [--refresh] [--out DIR]   build tours from the code's structure, no model
 code-viz tour draft <ids> | --all    write a drafting prompt per example (default codeviz/drafts/)
 ```
+
+`tour skeleton` writes a starting tour for each example from the code itself, with no model, so every
+example has an Explain view at once; free-model drafts and Bill's edits then improve the ones that
+matter. It builds:
+
+- reveal steps in reading order. For Python it reads the program's structure (`ast`): the imports,
+  then each top-level function or class (a long class shows its header, then each method), then the
+  main code. For other languages it finds functions and blocks with a brace, indentation or label
+  heuristic (C, C++, Java, JavaScript, Scheme, Haskell, OCaml, Prolog, MIPS labels, VHDL units, SQL
+  statements, shell functions), and otherwise uses chunks of about 8 to 12 lines. At most nine
+  reveal steps: the smallest neighbouring parts are merged first;
+- focus steps on loops, decisions and returns, at most four, spread over the code;
+- run steps at moments the committed trace really has: each function's or method's first call and
+  first return (Python traces, which name the function in every frame), then the end of the run.
+  Display-only examples (`viz=show`) get reveal and focus steps only;
+- short notes from fixed templates that say only what the structure shows: "Lines 3-7 define
+  `fib(n)`, which calls itself." only when the code calls `fib` inside `fib`, otherwise "Lines 3-7
+  define `fib(n)`."; "Line 12 checks `n <= 1`."; "Line 19 holds the data labeled `val1`." There are
+  no predict steps: those need real questions, which drafts and Bill add.
+
+Each skeleton has `"source": "skeleton"` and `"reviewed": false`, and passes `tour check` before it is
+written (a step the checks reject is dropped). A tour whose `source` is anything else (a model's
+draft, or Bill's edit) is never overwritten. A skeleton is not rewritten either, unless `--refresh`
+is given, which rewrites only skeletons. The title is the heading above the example on its page
+(a notebook's file name for notebook cells).
 
 `tour draft` writes, for each example, a prompt with the code (numbered), the deck's own text before
 and after it, the trace's first visit to each line, the format above, and Bill's writing rules in
@@ -1076,7 +1102,7 @@ time it took, and a snapshot of the sandbox's containers, images, networks, port
 watched folders. It then replaces what changes from run to run with stable labels, the same label for
 the same value everywhere in the recording: container and image ids become `<id-1>`, digests
 `sha256:<digest-1>`, timestamps and "3 seconds ago" become `<time>`, Docker's made-up container names
-`<name-1>`, temporary paths `/tmp/<tmp-1>`, and the work folder `~`. Rules in the scenario's
+`<name-1>`, temporary paths `/tmp/<tmp-1>`, `ls -l` dates `<date>`, and the work folder `~`. Rules in the scenario's
 `masking` (a pattern and a label, `{n}` for the counter) are added. It writes
 `viz/sessions/<id>.json.gz`, then publishes as `code-viz publish` does. The recording is committed,
 like agent recordings; CI never records. Afterwards the sandbox, its network, the images the
@@ -1102,6 +1128,12 @@ How each command runs, so a recording looks like a student's terminal and does n
 - two recordings can run at once (two minipc slots): when one run's cleanup removes an image the other
   still needs (the recorder image, a `shell` image, the sandbox or a scenario image), the other builds
   or pulls it again and carries on;
+- with `user` (`"student"`, or a uid such as `1000`), the commands run as that ordinary user instead
+  of root, so `id` shows uid 1000 and `cat /etc/shadow` fails, as on a student's machine: the user
+  (a name gets uid 1000, a uid gets the name `student`) is created in the recorder and in a `shell`
+  image, its home is the work folder, which is chowned to it before the first command, and Docker
+  stays reachable (TCP to the sandbox; in a `shell` image the sandbox's socket is opened). Setup and
+  image loading stay root, and the uid is never masked;
 - the output is kept twice: `cast`, the terminal output as timestamped chunks (`[[seconds since the
   command started, text], ...]`, like asciinema's cast v2, control codes kept), which the viewer
   replays at the pace it ran; and `output`, plain text with the control codes removed and a `\r`

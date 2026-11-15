@@ -140,6 +140,11 @@
               "description": "Commands run once when the image is built (for example apt-get install). Not recorded and not shown."
             }
           }
+        },
+        "user": {
+          "type": "string",
+          "pattern": "^([a-z_][a-z0-9_-]{0,31}|[1-9][0-9]{0,8})$",
+          "description": "Run the commands as this ordinary user instead of root: a name (created with uid 1000) or a uid (named student). Its home is the work folder; setup and image loading stay root. The uid is never masked."
         }
       }
     },

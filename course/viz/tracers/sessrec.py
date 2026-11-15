@@ -5,6 +5,12 @@ sessions and recording.
 
 Usage (inside the recorder container):  python3 sessrec.py SCENARIO.json OUT.json [--shell CONTAINER]
 
+With a scenario `user` ("student", or a uid such as 1000), the commands run as that ordinary user:
+it is created here (and in a `shell` image's container) with its home set to the work folder, the
+pseudo-terminal's child drops root before running bash, and a shell image's commands run through
+`docker exec -u UID:GID`. Docker stays reachable: DOCKER_HOST is TCP to the sandbox, and in a shell
+image the sandbox's socket is opened to everyone (it is a throwaway sandbox). Setup stays root.
+
 Runs the scenario's commands in order, one bash per command, under a pseudo-terminal of 100 columns
 by 30 rows with HOME set to the work folder, so `docker run -it ...` and other programs that want a
 terminal work with nobody typing: their input is at end of file. The shell's working folder and
@@ -93,7 +99,21 @@ def snapshot(work, watch, shell_image):
     return state
 
 
-def run(cmd, work, timeout, shell):
+def make_user(spec):
+    """Create the scenario's user in this container: (name, uid, gid). A name gets uid 1000, a uid
+    gets the name student."""
+    if not spec:
+        return None
+    name, uid = (spec, 1000) if not spec.isdigit() else ("student", int(spec))
+    subprocess.run(["groupadd", "-g", str(uid), name], capture_output=True)
+    subprocess.run(["useradd", "-u", str(uid), "-g", str(uid), "-M", "-d", WORK_DIR[0], "-s", "/bin/bash", name], capture_output=True)
+    return name, uid, uid
+
+
+WORK_DIR = ["/work"]
+
+
+def run(cmd, work, timeout, shell, user=None):
     """Run one command under a pseudo-terminal; returns (chunks [[seconds, text]], exit status, seconds)."""
     prelude = ("mkdir -p /tmp/cviz; cd \"$(cat /tmp/cviz/cwd 2>/dev/null || echo \"$HOME\")\"; "
                "[ -f /tmp/cviz/env ] && . /tmp/cviz/env; ")
@@ -104,16 +124,23 @@ def run(cmd, work, timeout, shell):
         # Tutorials assume bash (echo -e, [[ ]], arrays), so use it when the image has it; images without
         # bash (alpine and other minimal ones) fall back to their sh.
         inner = "stty cols %d rows %d 2>/dev/null; %s" % (COLS, ROWS, script)
-        argv = ["docker", "exec", "-it", "-e", f"HOME={work}", "-e", f"COLUMNS={COLS}", "-e", f"LINES={ROWS}",
+        as_user = ["-u", f"{user[1]}:{user[2]}"] if user else []
+        argv = ["docker", "exec", "-it", *as_user, "-e", f"HOME={work}", "-e", f"COLUMNS={COLS}", "-e", f"LINES={ROWS}",
                 "-e", "TERM=xterm", shell, "sh", "-c",
                 'if command -v bash >/dev/null 2>&1; then exec bash -c "$1"; else exec sh -c "$1"; fi', "cviz", inner]
     else:
         argv = ["bash", "-c", script]
     env = dict(os.environ, HOME=work, TERM="xterm", COLUMNS=str(COLS), LINES=str(ROWS))
+    if user and not shell:
+        env.update(USER=user[0], LOGNAME=user[0])
     t0 = time.time()
     pid, fd = pty.fork()
     if pid == 0:
         fcntl.ioctl(sys.stdout.fileno(), termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        if user and not shell:              # drop root: the scenario's ordinary user runs the command
+            os.setgroups([])
+            os.setgid(user[2])
+            os.setuid(user[1])
         os.chdir(work)
         os.execvpe(argv[0], argv, env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
@@ -186,15 +213,28 @@ def main():
     shell = sys.argv[sys.argv.index("--shell") + 1] if "--shell" in sys.argv else None
     shell_image = sys.argv[sys.argv.index("--shell-image") + 1] if "--shell-image" in sys.argv else None
     work = scn.get("workdir", "/work")
+    WORK_DIR[0] = work
     os.makedirs(work, exist_ok=True)
+    user = make_user(scn.get("user")) if not shell else None
+    if scn.get("user") and shell:
+        name, uid = (scn["user"], 1000) if not scn["user"].isdigit() else ("student", int(scn["user"]))
+        user = (name, uid, uid)
+        # Make the same user in the shell image when it has the tools (Debian useradd, Alpine adduser).
+        subprocess.run(["docker", "exec", shell, "sh", "-c",
+                        f"(groupadd -g {uid} {name} && useradd -u {uid} -g {uid} -M -d {shlex.quote(work)} {name}) 2>/dev/null"
+                        f" || (addgroup -g {uid} {name} && adduser -D -H -u {uid} -G {name} -h {shlex.quote(work)} {name}) 2>/dev/null || true"])
     if shell:
-        subprocess.run(["docker", "exec", shell, "sh", "-c", f"mkdir -p /tmp/cviz && echo {shlex.quote(work)} > /tmp/cviz/cwd"])
+        own = f"chown -R {user[1]}:{user[2]} /tmp/cviz" if user else "true"
+        subprocess.run(["docker", "exec", shell, "sh", "-c", f"mkdir -p /tmp/cviz && echo {shlex.quote(work)} > /tmp/cviz/cwd && {own}"])
     else:
         os.makedirs("/tmp/cviz", exist_ok=True)
         open("/tmp/cviz/cwd", "w").write(work + "\n")
+        if user:
+            for p in ("/tmp/cviz", "/tmp/cviz/cwd"):
+                os.chown(p, user[1], user[2])
     steps = []
     for cmd in scn["commands"]:
-        cast, rc, secs = run(cmd, work, scn.get("timeout", 120), shell)
+        cast, rc, secs = run(cmd, work, scn.get("timeout", 120), shell, user)
         steps.append({"cmd": cmd, "cast": cast, "exit": rc, "duration": secs,
                       "state": snapshot(work, scn.get("watch", []), shell_image)})
     ver = docker("version", "--format", "{{.Server.Version}}").strip()

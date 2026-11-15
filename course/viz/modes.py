@@ -40,6 +40,13 @@ folder as ~), plain() keeps a plain-text copy of each output for comparison, and
 differences for `record --check`. Afterwards the sandbox, its network and the images the recording
 pulled are removed; staging folders move to ~/scratch/code-viz on the host.
 
+Skeletons (`code-viz tour skeleton`, through cmd_skeleton() and skeleton_tour()): a tour built from
+the code's structure with no model (Python through ast, other languages through DEF_RE and brace,
+s-expression or label spans, else line chunks), focus steps from loops, decisions and returns, run
+steps at each function's first call and return in the committed trace, and template notes that state
+only what the structure shows. Source "skeleton"; any other source is never overwritten, and
+--refresh rewrites only skeletons.
+
 Drafting (`code-viz tour draft`, through cmd_draft()): one prompt file per example with the code,
 the deck text around it, the trace's line visits, the format, and STYLE, Bill's writing rules in short
 form. No model is called here.
@@ -588,6 +595,7 @@ class Masker:
         (r"\b(?:About an? \w+|Less than a second|an? \w+|\d+ \w+?s?) ago\b", "<time> ago"),
         (r"\bUp (?:About an? \w+|Less than a second|\d+ \w+)", "Up <time>"),
         (r"/tmp/tmp[\w.-]+", "/tmp/<tmp-{n}>"),
+        (r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d (?:\d\d:\d\d|\s?\d{4})\b", "<date>"),
     ]
 
     def __init__(self, work, names, extra):
@@ -683,6 +691,12 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
             r = host_shell(f"{docker.prefix()} save {shlex_quote(img)} | {docker.prefix()} exec -i {dind} docker load")  # noqa: E501
             if r.returncode != 0:
                 raise RuntimeError(f"could not load {img} into the sandbox: {r.stderr[-300:]}")
+        user = scn.get("user")
+        if user:
+            # The ordinary user owns the work folder (it is bind-mounted into the sandbox and the
+            # recorder); chowned with the recorder image itself, as root, before any command runs.
+            uid = int(user) if user.isdigit() else 1000
+            docker.sh(["run", "--rm", "--network", "none", "-v", f"{rdir}/work:/w", session_tag, "chown", "-R", f"{uid}:{uid}", "/w"])
         shell_args = []
         if shell_tag:
             snet = ["--network", "none"] if net == "none" else []
@@ -690,6 +704,8 @@ def record_once(docker, commands, scn, tag, stage_dir, shell_tag, tracers, sessi
                        "-e", "DOCKER_HOST=unix:///var/run/docker.sock", "-v", "/var/run/docker.sock:/var/run/docker.sock",
                        "-v", f"{work}:{work}", shell_tag, "sleep", "infinity"])
             shell_args = ["--shell", "cviz-shell", "--shell-image", shell_tag.split(":")[0]]
+            if user:   # the ordinary user in the shell image talks to the sandbox's Docker through its socket
+                docker.sh(["exec", dind, "chmod", "666", "/var/run/docker.sock"])
         rnet = ["--network", inet]
         total = 120 + len(commands) * int(scn.get("timeout", 120))
         for attempt in range(3):
@@ -845,3 +861,395 @@ def compare(old, new):
         for i, (x, y) in enumerate(zip(xs, ys)):
             line(i, x, y, f"branch {name}")
     return diffs
+
+
+# ---- skeleton tours (code-viz tour skeleton) -------------------------------------------------------
+#
+# A skeleton tour is built from the code's structure, with no model: reveal each part in reading order,
+# focus on loops, decisions and returns, and add run steps at moments the trace really has (each
+# function's first call and first return, and the end). Notes come from fixed templates and say only
+# what the structure shows ("Lines 3-7 define `fib(n)`, which calls itself."). Skeletons carry
+# "source": "skeleton" and "reviewed": false; free-model drafts and Bill's edits replace them, and a
+# tour whose source is anything else is never overwritten.
+
+MAX_REVEALS, MAX_FOCUS = 9, 4
+
+
+def _span(a, b):
+    return f"Line {a}" if a == b else f"Lines {a}-{b}"
+
+
+def _verb(a, b, plural):
+    """The verb agreeing with _span(a, b): "Lines 3-7 define" but "Line 3 defines"."""
+    if a != b:
+        return plural
+    return {"are": "is", "hold": "holds", "carry": "carries"}.get(plural, plural + "s")
+
+
+def _say(a, b, verb, rest):
+    return f"{_span(a, b)} {_verb(a, b, verb)} {rest}"
+
+
+def _lines(a, b):
+    return str(a) if a == b else f"{a}-{b}"
+
+
+def _join(names):
+    names = [f"`{n}`" for n in names]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _short(src, limit=40):
+    src = " ".join((src or "").split())
+    return src if 0 < len(src) <= limit else ""
+
+
+def _python_parts(code):
+    """[(start, end, note, kind, name)] for top-level parts, plus focus candidates [(line, note)]."""
+    import ast
+    tree = ast.parse(code)
+    parts, focus, main = [], [], []
+
+    def flush():
+        if main:
+            a, b = main[0][0], main[-1][1]
+            prints = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "print"
+                         for node in (x[2] for x in main) for n in ast.walk(node))
+            again = any(p[3] == "main" for p in parts)
+            parts.append((a, b, _say(a, b, "continue" if again else "run", "the main code"
+                                     + (" and print the results." if prints else ".")), "main", None))
+            main.clear()
+
+    for node in tree.body:
+        a = min([d.lineno for d in getattr(node, "decorator_list", [])] + [node.lineno])
+        b = getattr(node, "end_lineno", node.lineno)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            flush()
+            names = [x.name for x in node.names] if isinstance(node, ast.Import) else [node.module or "."]
+            if parts and parts[-1][3] == "import" and parts[-1][1] >= a - 1:
+                pa, _, pnames = parts[-1][0], parts[-1][1], parts[-1][4]
+                parts[-1] = (pa, b, None, "import", pnames + names)
+            else:
+                parts.append((a, b, None, "import", names))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            flush()
+            params = ", ".join(x.arg for x in node.args.args)
+            calls_self = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == node.name for n in ast.walk(node))
+            gen = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(node))
+            what = f"the generator `{node.name}({params})`" if gen else f"`{node.name}({params})`"
+            parts.append((a, b, _say(a, b, "define", what + (", which calls itself." if calls_self else ".")), "def", node.name))
+        elif isinstance(node, ast.ClassDef):
+            flush()
+            ms = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            methods = [n.name for n in ms]
+            if b - a < 12 or not ms:
+                parts.append((a, b, _say(a, b, "define", f"the class `{node.name}`" + (f", with methods {_join(methods)}." if methods else ".")),
+                              "class", node.name))
+            else:
+                # A long class: its header first, then each method on its own.
+                first = min([d.lineno for d in ms[0].decorator_list] + [ms[0].lineno])
+                if first - 1 >= a:
+                    parts.append((a, first - 1, _say(a, first - 1, "start", f"the class `{node.name}`, which has methods {_join(methods)}."),
+                                  "class", node.name))
+                for m in ms:
+                    ma = min([d.lineno for d in m.decorator_list] + [m.lineno])
+                    mb = getattr(m, "end_lineno", m.lineno)
+                    params = ", ".join(x.arg for x in m.args.args)
+                    rec = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == m.name for n in ast.walk(m))
+                    parts.append((ma, mb, _say(ma, mb, "define", f"the method `{m.name}({params})`" + (", which calls itself." if rec else ".")),
+                                  "def", m.name))
+        else:
+            main.append((a, b, node))
+            if main[-1][1] - main[0][0] >= 11:
+                flush()
+    flush()
+    parts = [(a, b, n or _say(a, b, "import", _join(nm) + "."), k, nm) for a, b, n, k, nm in parts]
+    for n in ast.walk(tree):
+        seg = lambda x: _short(ast.get_source_segment(code, x))
+        if isinstance(n, (ast.For, ast.AsyncFor)):
+            s = seg(n.iter)
+            focus.append((n.lineno, f"Line {n.lineno} loops over `{s}`." if s else f"Line {n.lineno} starts a loop."))
+        elif isinstance(n, ast.While):
+            s = seg(n.test)
+            focus.append((n.lineno, f"Line {n.lineno} repeats while `{s}` is true." if s else f"Line {n.lineno} starts a loop."))
+        elif isinstance(n, ast.If):
+            s = seg(n.test)
+            focus.append((n.lineno, f"Line {n.lineno} checks `{s}`." if s else f"Line {n.lineno} makes a decision."))
+        elif isinstance(n, ast.Return) and n.value is not None:
+            s = seg(n.value)
+            focus.append((n.lineno, f"Line {n.lineno} returns `{s}`." if s else f"Line {n.lineno} returns a value."))
+    return parts, focus
+
+
+DEF_RE = {
+    "c": r"^[A-Za-z_][\w\s\*]*?\b([A-Za-z_]\w*)\s*\([^;]*\)\s*\{?\s*$",
+    "java": r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized)\s+)+[\w<>\[\], ]+\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:throws [\w., ]+)?\{?\s*$",
+    "js": r"^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(|^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>",
+    "scheme": r"^\(define\s+\(?\s*([^\s()]+)",
+    "haskell": r"^([a-z_][\w']*)\s.*?=",
+    "ocaml": r"^let\s+(?:rec\s+)?([a-z_][\w']*)",
+    "prolog": r"^([a-z][\w]*)\s*(?:\(|:-)",
+    "mips": r"^\s*([A-Za-z_.$][\w.$]*):",
+    "shell": r"^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{?",
+    "vhdl": r"^\s*(?:entity|architecture|process|component)\s+([A-Za-z_]\w*)",
+}
+DEF_RE["cpp"] = DEF_RE["c"]
+DEF_RE["mini"] = r"^\s*(?:fun|def|function)\s+([A-Za-z_]\w*)"
+NOT_NAMES = {"if", "for", "while", "switch", "return", "catch", "else", "do", "sizeof", "main_loop"}
+LOOP_RE = re.compile(r"^\s*(?:for|while|do|foreach|loop)\b|\bforEach\(")
+COND_RE = re.compile(r"^\s*(?:if|else\s+if|elif|switch|case|cond|when)\b|^\s*\(if\b|^\s*\(cond\b")
+RET_RE = re.compile(r"^\s*return\b")
+
+
+def _brace_end(lines, i):
+    """The line where the block opened at or after line i closes (brace counting), or i."""
+    depth, opened = 0, False
+    for j in range(i, len(lines)):
+        for ch in lines[j]:
+            if ch == "{":
+                depth += 1; opened = True
+            elif ch == "}":
+                depth -= 1
+        if opened and depth <= 0:
+            return j
+        if not opened and j > i + 1:
+            return i
+    return len(lines) - 1
+
+
+def _sexp_end(lines, i):
+    depth = 0
+    for j in range(i, len(lines)):
+        for ch in lines[j].split(";")[0]:
+            depth += ch == "("
+            depth -= ch == ")"
+        if depth <= 0:
+            return j
+    return len(lines) - 1
+
+
+def _chunks(lines, a, b, size=10):
+    """Split lines a..b (0-based) into chunks of about 8 to 12 lines, preferring blank lines."""
+    out, s = [], a
+    while s <= b:
+        e = min(b, s + size - 1)
+        if e < b:
+            for k in range(min(b, s + 11), s + 6, -1):
+                if not lines[k].strip():
+                    e = k; break
+        out.append((s, e))
+        s = e + 1
+    return [(x, y) for x, y in out if any(lines[k].strip() for k in range(x, y + 1))]
+
+
+def _other_parts(code, lang):
+    lines = code.split("\n")
+    rx = DEF_RE.get(lang)
+    parts, i = [], 0
+    if lang == "sql":
+        stmt_start = None
+        for k, l in enumerate(lines):
+            if stmt_start is None and l.strip() and not l.strip().startswith("--"):
+                stmt_start = k
+            if stmt_start is not None and l.rstrip().endswith(";"):
+                kw = lines[stmt_start].split()[0].upper() if lines[stmt_start].split() else "SQL"
+                parts.append((stmt_start + 1, k + 1, _say(stmt_start + 1, k + 1, "run", f"a `{kw}` statement."), "stmt", kw))
+                stmt_start = None
+        if stmt_start is not None:
+            parts.append((stmt_start + 1, len(lines), _say(stmt_start + 1, len(lines), "run", "the last statement."), "stmt", None))
+    elif rx:
+        rxc = re.compile(rx)
+        starts = []
+        for k, l in enumerate(lines):
+            m = rxc.match(l)
+            if m:
+                name = next((g for g in m.groups() if g), None)
+                if name and name not in NOT_NAMES:
+                    starts.append((k, name))
+        covered = -1
+        for idx, (k, name) in enumerate(starts):
+            if k <= covered:
+                continue
+            if lang in ("scheme",):
+                e = _sexp_end(lines, k)
+            elif lang in ("mips", "haskell", "ocaml", "prolog", "vhdl"):
+                nxt = [s for s, _ in starts if s > k]
+                e = (nxt[0] - 1) if nxt else len(lines) - 1
+                while e > k and not lines[e].strip():
+                    e -= 1
+            elif lang == "shell" or "{" in "".join(lines[k:k + 2]):
+                e = _brace_end(lines, k)
+            else:
+                e = k
+            if covered + 1 < k:          # code between definitions
+                for a, b in _chunks(lines, covered + 1, k - 1):
+                    parts.append((a + 1, b + 1, _say(a + 1, b + 1, "set" if not parts else "continue", "things up." if not parts else "the example."), "chunk", None))
+            if lang == "mips":
+                body = "\n".join(lines[k:e + 1])
+                data = re.search(r"\.(word|asciiz|ascii|space|byte|half|float|double)\b", body) and not re.search(r"^\s*(?:[\w.$]+:)?\s*(?:add|sub|li|la|lw|sw|move|syscall|jal|jr|beq|bne|j|addi|mul|div)\b", body, re.M)
+                note = _say(k + 1, e + 1, "hold", f"the data labeled `{name}`.") if data else _say(k + 1, e + 1, "are", f"the code under the label `{name}`.")
+            else:
+                note = _say(k + 1, e + 1, "define", ("the " if lang == "vhdl" else "") + f"`{name}`.")
+            parts.append((k + 1, e + 1, note, "def", name))
+            covered = e
+        if covered < len(lines) - 1:
+            for a, b in _chunks(lines, covered + 1, len(lines) - 1):
+                parts.append((a + 1, b + 1, _say(a + 1, b + 1, "set" if not parts else "run", "things up." if not parts else "the rest of the example."), "chunk", None))
+    if not parts:
+        for a, b in _chunks(lines, 0, len(lines) - 1):
+            parts.append((a + 1, b + 1, _say(a + 1, b + 1, "start" if not parts else "continue", "the example." if not parts else "it."), "chunk", None))
+    focus = []
+    for k, l in enumerate(lines):
+        if LOOP_RE.search(l):
+            focus.append((k + 1, f"Line {k + 1} starts a loop."))
+        elif COND_RE.search(l):
+            focus.append((k + 1, f"Line {k + 1} makes a decision."))
+        elif RET_RE.search(l):
+            focus.append((k + 1, f"Line {k + 1} returns a value."))
+    return parts, focus
+
+
+def _merge(parts, limit):
+    """Merge the smallest neighbouring parts until there are at most `limit` reveal steps."""
+    parts = list(parts)
+    while len(parts) > limit:
+        k = min(range(len(parts) - 1), key=lambda i: (parts[i + 1][1] - parts[i][0]))
+        a, b = parts[k][0], parts[k + 1][1]
+        names = [p[4] for p in (parts[k], parts[k + 1]) if p[3] in ("def", "class") and p[4]]
+        note = _say(a, b, "define", _join(names) + ".") if names and all(p[3] in ("def", "class") for p in (parts[k], parts[k + 1])) \
+            else _say(a, b, "continue", "the example.")
+        parts[k:k + 2] = [(a, b, note, "chunk", None)]
+    return parts
+
+
+def _run_steps(root, vid, defs):
+    """Run steps at moments the committed trace really has: each function's first call and first
+    return (Python traces, which name the function in each frame), then the last step."""
+    p = os.path.join(root, "viz", "traces", vid + ".json.gz")
+    if not os.path.exists(p):
+        return []
+    try:
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            t = json.load(f)
+    except (OSError, ValueError):
+        return []
+    steps = t.get("steps") or []
+    if not steps or t.get("kind") in ("plain", "cast", "agent"):
+        return []
+    out = []
+    if t.get("kind") == "env" and t.get("language") == "python":
+        for name in defs:
+            first = next((i for i, s in enumerate(steps) if len(s.get("stack") or []) > 1 and s["stack"][-1].get("func") == name), None)
+            if first is None:
+                continue
+            out.append({"kind": "run", "trace_step": first, "lines": str(steps[first].get("line") or 1),
+                        "description": f"Here `{name}` is called for the first time; its frame appears on the right."})
+            ret = next((i for i in range(first, len(steps)) if steps[i].get("event") == "return"
+                        and (steps[i].get("stack") or [{}])[-1].get("func") == name), None)
+            if ret is not None and ret != first:
+                out.append({"kind": "run", "trace_step": ret, "lines": str(steps[ret].get("line") or 1),
+                            "description": f"Here `{name}` returns, the first time it does."})
+            if len(out) >= 4:
+                break
+    last = len(steps) - 1
+    step = {"kind": "run", "trace_step": last, "description": "This is the end of the run: the final state, and all of the output."}
+    ln = steps[last].get("line") if isinstance(steps[last], dict) else None
+    if isinstance(ln, int) and ln > 0:
+        step["lines"] = str(ln)
+    if not any(s["trace_step"] == last for s in out):
+        out.append(step)
+    return out
+
+
+def skeleton_tour(root, b, title):
+    """A skeleton tour for one labeled block `b` (code-viz block dict), or None for no code."""
+    vid, code = b["label"]["id"], b["code"]
+    if not code.strip():
+        return None
+    lang = (b["label"].get("lang") or b["lang"] or "").lower()
+    lang = {"python3": "python", "py": "python", "javascript": "js", "node": "js", "c++": "cpp", "bash": "shell", "sh": "shell",
+            "sqlite": "sql", "racket": "scheme", "s": "mips", "spim": "mips", "vhd": "vhdl", "hs": "haskell", "ml": "ocaml"}.get(lang, lang)
+    parts = focus = None
+    if lang == "python":
+        try:
+            parts, focus = _python_parts(code)
+        except SyntaxError:
+            parts = None
+    if parts is None:
+        parts, focus = _other_parts(code, lang)
+    parts = _merge(parts, MAX_REVEALS)
+    nlines = len(code.split("\n"))
+    steps = []
+    used = set()
+    picks = sorted(focus, key=lambda x: x[0])
+    if len(picks) > MAX_FOCUS:                      # spread the focus steps over the code
+        step_ = len(picks) / MAX_FOCUS
+        picks = [picks[int(i * step_)] for i in range(MAX_FOCUS)]
+    for a, b_, note, kind, name in parts:
+        steps.append({"kind": "reveal", "lines": _lines(a, min(b_, nlines)), "description": note})
+        for ln, fnote in picks:
+            if a <= ln <= b_ and ln not in used:
+                used.add(ln)
+                steps.append({"kind": "focus", "lines": str(ln), "description": fnote})
+    if b["label"].get("viz") != "show":
+        defs = [p[4] for p in parts if p[3] == "def" and p[4]]
+        steps += _run_steps(root, vid, defs)
+    return {"version": 1, "example": vid, "title": title or f"Example {vid}",
+            "description": "A walkthrough built from the code's structure: each part in reading order, then the moments to look at.",
+            "reviewed": False, "source": "skeleton", "steps": steps}
+
+
+def _heading_above(root, b):
+    page = b.get("page", "")
+    if not page.endswith(".md") or not os.path.exists(os.path.join(root, page)):
+        return ""
+    lines = open(os.path.join(root, page), encoding="utf-8", errors="replace").read().split("\n")
+    for k in range(min(b.get("start", 0), len(lines)) - 1, -1, -1):
+        m = re.match(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$", lines[k])
+        if m:
+            return re.sub(r"[`*_]", "", m.group(1)).strip()[:80]
+    return ""
+
+
+def cmd_skeleton(root, a, codes, blocks):
+    """code-viz tour skeleton <ids>|--all [--out DIR] [--refresh] (section 22)."""
+    by_id = {b["label"]["id"]: b for b in blocks if b.get("label") and b["label"].get("id")}
+    ids = list(a.ids) or ([v for v in sorted(by_id) if by_id[v]["label"].get("viz") != "session"] if a.all else [])
+    if not ids:
+        print("name example ids, or --all for every labeled example")
+        return 64
+    out = a.out or os.path.join(root, TOUR_DIR)
+    os.makedirs(out, exist_ok=True)
+    written = kept = skipped = bad = 0
+    for vid in ids:
+        b = by_id.get(vid)
+        if b is None:
+            print(f"{vid}: no labeled example with this id"); bad += 1; continue
+        dst = os.path.join(out, vid + ".json")
+        if os.path.exists(dst):
+            try:
+                src = json.load(open(dst, encoding="utf-8")).get("source", "")
+            except (ValueError, OSError):
+                src = "?"
+            if src != "skeleton":
+                kept += 1; continue                  # a draft or Bill's edit: never overwritten
+            if not getattr(a, "refresh", False):
+                skipped += 1; continue
+        title = _heading_above(root, b) or (f"Notebook {os.path.basename(b['page'])}" if b.get("page", "").endswith(".ipynb") else "")
+        t = skeleton_tour(root, b, title)
+        if t is None:
+            continue
+        errs = check_tour(normalize_tour(t), vid, None, codes, root)
+        if errs:                                     # drop any step the checks reject, keep the rest
+            badsteps = {int(m.group(1)) for e in errs for m in [re.match(r"/steps\[(\d+)\]", e)] if m}
+            t["steps"] = [s for i, s in enumerate(t["steps"]) if i not in badsteps]
+            errs = check_tour(normalize_tour(t), vid, None, codes, root) if t["steps"] else ["no steps left"]
+        if errs:
+            print(f"{vid}: skeleton failed its checks: " + "; ".join(errs[:3])); bad += 1; continue
+        with open(dst, "w", encoding="utf-8") as f:
+            json.dump(t, f, indent=1, ensure_ascii=False)
+            f.write("\n")
+        written += 1
+    print(f"skeleton tours: {written} written, {kept} kept (drafted or edited), {skipped} already had a skeleton"
+          + (" (--refresh rewrites them)" if skipped else "") + (f", {bad} failed" if bad else ""))
+    return 1 if bad else 0
