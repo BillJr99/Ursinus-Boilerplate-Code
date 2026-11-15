@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/BillJr99/Ursinus-Boilerplate-Code/course/viz/schemas/session.schema.json",
-  "title": "code-viz session (Simulate mode), version 1",
-  "description": "A recorded terminal session (shell and Docker commands run for real in a throwaway sandbox on the recording host) that the viewer replays step by step. The scenario (what to run) is the source: <course repo>/codeviz/sessions/<id>.json or .yaml, or the commands of a shell block labeled viz=session. `code-viz record <id>` runs it and writes the recording (scenario plus steps, masked) to viz/sessions/<id>.json.gz, which is committed; CI never re-records. Manual: `code-viz readme`, section 23.",
+  "title": "code-viz session (Simulate and Terminal), version 1",
+  "description": "A recorded terminal session (shell and Docker commands run for real in a throwaway sandbox on the recording host) that the viewer replays step by step. The scenario (what to run) is the source: <course repo>/codeviz/sessions/<id>.json or .yaml, or the commands of a shell block labeled viz=session. `code-viz record <id>` runs it and writes the recording (scenario plus steps, masked) to viz/sessions/<id>.json.gz, which is committed; CI never re-records. Manual: `code-viz readme`, section 23. Optional provenance=scripted sources supply illustrative steps instead of a recording. They are never executed and publish only Terminal mode with a visible illustration label.",
   "type": "object",
   "required": [
     "version",
@@ -89,6 +89,17 @@
         }
       },
       "description": "Explanations at zero-based command indices. No command is added by a marker."
+    },
+    "provenance": {
+      "enum": [
+        "recorded",
+        "scripted"
+      ],
+      "description": "Defaults to recorded. Scripted steps are illustrations and are never executed by the recorder."
+    },
+    "demo": {
+      "type": "boolean",
+      "description": "Opt into one-shot, visible-on-scroll command typing. Requires terminal=true."
     }
   },
   "$defs": {

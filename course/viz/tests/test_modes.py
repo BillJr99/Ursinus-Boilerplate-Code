@@ -219,5 +219,62 @@ class TerminalTests(unittest.TestCase):
             self.assertNotIn("terminal", entries[0]["modes"])
 
 
+class DemoTests(unittest.TestCase):
+    def illustration(self):
+        return {"version": 1, "id": "demo", "title": "Illustration", "terminal": True,
+                "provenance": "scripted", "demo": True,
+                "scenario": {"commands": ["docker --version"]},
+                "steps": [{"cmd": "docker --version", "output": "Typical version banner\n", "exit": 0}]}
+
+    def test_scripted_is_not_a_recording(self):
+        doc = self.illustration()
+        self.assertEqual(M.check_session(doc), [])
+        doc["recorded"] = {}
+        self.assertIn("a scripted illustration cannot contain recording metadata", M.check_session(doc))
+        doc.pop("recorded")
+        doc["steps"][0]["cmd"] = "different command"
+        self.assertIn("scripted steps must match all scenario commands in order", M.check_session(doc))
+
+    def test_scripted_bad_cast_reports_validation_error(self):
+        for chunks in [[["later", "text"]], [[1, "text"], [0, "backwards"]], [[float("inf"), "text"]]]:
+            doc = self.illustration()
+            doc["steps"][0]["cast"] = chunks
+            self.assertIn("scripted cast chunks need ordered finite times and text", M.check_session(doc))
+
+    def test_scripted_payload_cannot_be_relabelled_recorded(self):
+        doc = self.illustration()
+        doc["provenance"] = "recorded"
+        recording = self.illustration()
+        self.assertIn("recording is a scripted illustration; run the recorder", M.check_session(doc, recording))
+
+    def test_demo_requires_terminal(self):
+        doc = self.illustration()
+        doc["terminal"] = False
+        self.assertIn("a demo requires terminal=true", M.check_session(doc))
+
+    def test_recorder_refuses_scripted_before_docker(self):
+        with self.assertRaisesRegex(ValueError, "cannot be recorded"):
+            M.record(None, "demo", self.illustration(), None, None, None, None, None, None)
+
+    def test_scripted_publishes_terminal_only(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as root:
+            sources = os.path.join(root, "codeviz", "sessions")
+            os.makedirs(sources)
+            with open(os.path.join(sources, "demo.json"), "w") as f:
+                json.dump(self.illustration(), f)
+            entries = []
+            self.assertEqual(M.publish(root, {}, [], entries)[0], [])
+            self.assertEqual(entries[0]["modes"], ["terminal"])
+            with gzip.open(M.recording_path(root, "demo"), "rt") as f:
+                published = json.load(f)
+            self.assertNotIn("recorded", published)
+            self.assertEqual(published["provenance"], "scripted")
+            with open(os.path.join(root, "viz", "terminals", "demo.cast")) as f:
+                header = json.loads(f.readline())
+            self.assertEqual(header["code_viz_provenance"], "scripted")
+
+
+
 if __name__ == "__main__":
     unittest.main()

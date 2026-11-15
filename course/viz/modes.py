@@ -340,6 +340,27 @@ def check_session(doc, recording=None):
     errs = validate(doc, "session")
     if errs:
         return errs
+    if doc.get("demo") and not doc.get("terminal"):
+        errs.append("a demo requires terminal=true")
+    if doc.get("provenance") == "scripted":
+        if not doc.get("terminal"):
+            errs.append("a scripted illustration requires terminal=true")
+        if "recorded" in doc:
+            errs.append("a scripted illustration cannot contain recording metadata")
+        if [step["cmd"] for step in doc.get("steps", [])] != doc["scenario"]["commands"]:
+            errs.append("scripted steps must match all scenario commands in order")
+        if doc.get("branches"):
+            errs.append("scripted illustrations do not support branches")
+        import math
+        for step in doc.get("steps", []):
+            previous = 0
+            for chunk in step.get("cast", []):
+                if (len(chunk) != 2 or isinstance(chunk[0], bool)
+                        or not isinstance(chunk[0], (int, float)) or not math.isfinite(chunk[0])
+                        or chunk[0] < previous or not isinstance(chunk[1], str)):
+                    errs.append("scripted cast chunks need ordered finite times and text")
+                    break
+                previous = chunk[0]
     for marker in doc.get("markers", []):
         if marker["step"] >= len(doc["scenario"]["commands"]):
             errs.append("marker step is past the last command")
@@ -347,6 +368,8 @@ def check_session(doc, recording=None):
         rerrs = validate(recording, "session")
         errs += [f"recording {e}" for e in rerrs]
         if not rerrs:
+            if recording.get("provenance") == "scripted":
+                errs.append("recording is a scripted illustration; run the recorder")
             if not recording.get("steps"):
                 errs.append("recording has no steps")
             want = scenario_sha(doc["scenario"])
@@ -366,7 +389,8 @@ def terminal_cast(recording):
     """
     rec = recording.get("recorded") or {}
     rows = [{"version": 2, "width": rec.get("cols", 100), "height": rec.get("rows", 30),
-             "title": recording.get("title", "Terminal session")}]
+             "title": recording.get("title", "Terminal session"),
+             "code_viz_provenance": recording.get("provenance", "recorded")}]
     markers = {}
     for marker in recording.get("markers", []):
         markers.setdefault(marker["step"], []).append(marker)
@@ -427,18 +451,24 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
             os.unlink(p)
     recorded = set()
     terminals = set()
+    scripted = set()
     for vid, doc in sessions.items():
-        rec = load_recording(root, vid)
-        errs = check_session(doc, rec)
+        illustration = doc.get("provenance") == "scripted"
+        rec = dict(doc) if illustration else load_recording(root, vid)
+        errs = check_session(doc, None if illustration else rec)
         if rec is None:
             errs = errs + ["not recorded yet (code-viz record " + vid + ")"]
         if rec is not None and not [e for e in errs if not e.startswith("stale")]:
             recorded.add(vid)
+            if illustration:
+                scripted.add(vid)
             if doc.get("terminal") and not errs:
                 terminals.add(vid)
                 # Teaching notes can change without re-running the shell commands.
-                terminal_rec = dict(rec, terminal=True, markers=doc.get("markers", []))
-                if terminal_rec != rec:
+                terminal_rec = dict(rec, terminal=True, markers=doc.get("markers", []),
+                                    demo=doc.get("demo", False), provenance=doc.get("provenance", "recorded"))
+                if illustration or terminal_rec != rec:
+                    os.makedirs(os.path.dirname(recording_path(root, vid)), exist_ok=True)
                     with gzip.GzipFile(recording_path(root, vid), "wb", mtime=0) as f:
                         f.write(json.dumps(terminal_rec, ensure_ascii=False).encode("utf-8"))
                 dst = os.path.join(root, "viz", "terminals", vid + ".cast")
@@ -464,7 +494,7 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
             names = sorted(written[e["id"]])
             if names != [""]:
                 e["tours"] = names
-        if e["id"] in recorded:
+        if e["id"] in recorded and e["id"] not in scripted:
             modes.append("simulate")
         if e["id"] in terminals:
             modes.append("terminal")
@@ -475,7 +505,7 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
     for vid in sorted(recorded - have):
         doc = sessions[vid]
         index_entries.append({"id": vid, "viz": "session", "lang": "shell", "page": doc.get("page", ""),
-                              "line": 0, "page_url": "", "error": None, "steps": 0, "modes": ["simulate"] + (["terminal"] if vid in terminals else [])})
+                              "line": 0, "page_url": "", "error": None, "steps": 0, "modes": ([] if vid in scripted else ["simulate"]) + (["terminal"] if vid in terminals else [])})
     return problems, sum(len(v) for v in written.values())
 
 
@@ -800,6 +830,8 @@ def shlex_quote(s):
 def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host_name):
     """Record a session (main line and each branch, each from a fresh sandbox), mask it, and return
     the recording document (not yet written)."""
+    if doc.get("provenance") == "scripted":
+        raise ValueError("scripted illustrations cannot be recorded or executed")
     import hashlib as _h
     scn = doc["scenario"]
     tag = f"cviz-rec-{re.sub(r'[^a-z0-9-]', '-', vid.lower())[:30]}-{os.getpid()}"

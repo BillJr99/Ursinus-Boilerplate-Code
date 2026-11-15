@@ -1173,7 +1173,7 @@ one command to the next, with scrollback.
 
 ## 24. Terminal mode
 
-Terminal replays real commands continuously, with play/pause, speed, a seek bar and teaching markers.
+Terminal plays commands and output, with play/pause, speed, a seek bar and teaching markers.
 It uses the same isolated recorder as Simulate. Add `"terminal": true` to a session source under
 `codeviz/sessions/`. Optional `"markers": [{"step": 0, "title": "Read a file", "note": "You read the shared file."}]`
 attaches an explanation to a zero-based command index. Markers add no commands.
@@ -1193,6 +1193,24 @@ Use synthetic users and files. Keep credentials and private host paths out of co
 The recorder masks Docker IDs, timestamps and its work folder. Add session masking rules for other
 variable fields. Label build logs, version strings and other changing results as sample output in
 marker notes. Masking is a presentation aid, not a secret detector: inspect recordings before sharing.
+**Demo animations.** Add `"demo": true` to a Terminal session source. The player types commands
+at a readable presentation pace, then shows their output. Long quiet gaps are shortened for the
+demo only; the committed cast retains the recorder timings. It plays once when the pane scrolls
+into view and stops at the end. Pause and Play stay available. A reader who requests reduced
+motion sees the finished transcript with playback disabled. The Copy button resets after a short
+delay and whenever playback or seeking starts. Embedded players fill their iframe; the terminal
+gets the space left after controls, notes and transcript access.
+
+A demo has one of two provenances. `"provenance": "recorded"` (the default) uses output captured
+by `code-viz record` and always displays **Recorded output**. `"provenance": "scripted"` uses
+hand-written `steps` whose `cmd` fields match `scenario.commands` in order. Each step includes
+`output` and `exit`, with optional timed chunks. It always displays **Illustration: typical
+output; yours may differ**. Scripted sources require `terminal: true`, carry no `recorded`
+metadata and publish only Terminal mode, never Simulate. The recorder refuses to execute them.
+Use `code-viz publish --check` for scripted illustrations. Use them for GUI installers or account
+steps that a container cannot run; describe prerequisites and use demo paths. A scripted payload
+cannot become a recording just by changing its provenance field: it must pass through the recorder.
+
 No real tokens or model logins belong in a scenario. The exported cast omits the recording host and
 date. Command prompts are display aids; timed output comes from the recorder's captured chunks.
 

@@ -82,7 +82,7 @@
       b.className = "modetab" + (m === cur.mode ? " on" : "");
       b.setAttribute("aria-pressed", m === cur.mode ? "true" : "false");
       b.title = { run: "Run: step through what the code does (key 1)", explain: "Explain: a guided walkthrough of the code (key 2)",
-                  simulate: "Simulate: replay the recorded terminal session (key 3)", terminal: "Terminal: play the recording (key 4)" }[m];
+                  simulate: "Simulate: replay the recorded terminal session (key 3)", terminal: "Terminal: play commands and output (key 4)" }[m];
       b.onclick = () => switchTo(m);
       bar.appendChild(b);
     }

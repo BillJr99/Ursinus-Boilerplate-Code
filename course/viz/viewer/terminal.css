@@ -13,3 +13,15 @@
 body.terminal-embed .brand,body.terminal-embed #pagelink { display:none; }
 body.terminal-embed main { max-width:none; padding:8px; }
 #example > .controls[hidden],#example > .cols[hidden] { display:none; }
+
+#terminal-provenance { margin:8px 0 0; font-weight:600; flex:none; }
+body.terminal-embed[data-mode=terminal] { height:100dvh; display:flex; flex-direction:column; }
+body.terminal-embed[data-mode=terminal] > .bar { flex:none; }
+body.terminal-embed[data-mode=terminal] main { flex:1; min-height:0; display:flex; }
+body.terminal-embed[data-mode=terminal] #example { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
+body.terminal-embed[data-mode=terminal] #terminal-player { flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
+body.terminal-embed[data-mode=terminal] #terminal-screen { flex:1; height:auto; min-height:100px; margin:8px 0; }
+body.terminal-embed[data-mode=terminal] .terminal-controls,
+body.terminal-embed[data-mode=terminal] .terminal-notes,
+body.terminal-embed[data-mode=terminal] #terminal-transcript-details { flex:none; }
+body.terminal-embed #terminal-transcript { max-height:160px; }
