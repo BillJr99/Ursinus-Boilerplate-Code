@@ -1037,7 +1037,8 @@ Each skeleton has `"source": "skeleton"` and `"reviewed": false`, and passes `to
 written (a step the checks reject is dropped). A tour whose `source` is anything else (a model's
 draft, or Bill's edit) is never overwritten. A skeleton is not rewritten either, unless `--refresh`
 is given, which rewrites only skeletons. The title is the heading above the example on its page
-(a notebook's file name for notebook cells), with any dash used as a dash turned into a colon, then commas
+(a notebook's file name for notebook cells), with any dash used as a dash turned into a colon, then commas (all commas when the
+heading already has a colon)
 (Bill's no-em-dash rule: "Tuning <em dash> Metrics" becomes "Tuning: Metrics"); an unspaced en dash in
 a range or compound ("Precision<en dash>Recall") becomes a hyphen.
 
