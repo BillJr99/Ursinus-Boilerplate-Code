@@ -3,10 +3,11 @@
 Full manual: the header of code-viz (`code-viz readme`, or README.md), sections 21 (Modes and URL
 arguments), 22 (Explain mode and the tour format) and 23 (Simulate mode, sessions and recording).
 
-The viewer shows each example in up to three modes:
+The viewer shows each example in up to four modes:
   run       the recorded trace (viz/traces/<id>.json.gz), what code-viz always did
   explain   a guided tour (viz/tours/<id>.json, from codeviz/tours/<id>.json)
   simulate  a recorded terminal session (viz/sessions/<id>.json.gz, from a scenario)
+  terminal  continuous playback of an opted-in session (viz/terminals/<id>.cast)
 
 Sources are hand-written and live outside viz/ (CI owns viz/ and never edits anything else):
   codeviz/tours/<id>.json            the default tour of example <id>
@@ -339,6 +340,9 @@ def check_session(doc, recording=None):
     errs = validate(doc, "session")
     if errs:
         return errs
+    for marker in doc.get("markers", []):
+        if marker["step"] >= len(doc["scenario"]["commands"]):
+            errs.append("marker step is past the last command")
     if recording is not None:
         rerrs = validate(recording, "session")
         errs += [f"recording {e}" for e in rerrs]
@@ -353,6 +357,36 @@ def check_session(doc, recording=None):
 
 
 # ---- publishing into viz/ (code-viz build) -----------------------------------------------------------
+
+def terminal_cast(recording):
+    """Export masked recorder chunks as asciicast v2, without a host or wall-clock timestamp.
+
+    The prompt is a display aid. Output events come directly from the recorder; command duration
+    positions the next prompt. Markers attach explanations to the start of recorded commands.
+    """
+    rec = recording.get("recorded") or {}
+    rows = [{"version": 2, "width": rec.get("cols", 100), "height": rec.get("rows", 30),
+             "title": recording.get("title", "Terminal session")}]
+    markers = {}
+    for marker in recording.get("markers", []):
+        markers.setdefault(marker["step"], []).append(marker)
+    offset = 0.0
+    for index, step in enumerate(recording.get("steps", [])):
+        for marker in markers.get(index, []):
+            rows.append([round(offset, 6), "m", marker["title"]])
+        rows.append([round(offset, 6), "o", "$ " + step["cmd"] + "\r\n"])
+        chunks = step.get("cast") or [[0, step.get("output", "")]]
+        last = 0.0
+        for at, text in chunks:
+            last = max(last, float(at))
+            rows.append([round(offset + last, 6), "o", text])
+        # Preserve the real output. A separate line ending only separates the next prompt.
+        if chunks and chunks[-1][1] and not chunks[-1][1].endswith("\n"):
+            rows.append([round(offset + last, 6), "o", "\r\n"])
+        offset += max(float(step.get("duration", 0)), last) + 0.001
+    rows[0]["duration"] = round(offset, 6)
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
+
 
 def publish(root, codes, session_blocks, index_entries, meta=None):
     """Write valid tours to viz/tours/, keep recordings, and add "modes" to index entries.
@@ -392,6 +426,7 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
         if os.path.basename(p) not in keep:
             os.unlink(p)
     recorded = set()
+    terminals = set()
     for vid, doc in sessions.items():
         rec = load_recording(root, vid)
         errs = check_session(doc, rec)
@@ -399,6 +434,19 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
             errs = errs + ["not recorded yet (code-viz record " + vid + ")"]
         if rec is not None and not [e for e in errs if not e.startswith("stale")]:
             recorded.add(vid)
+            if doc.get("terminal") and not errs:
+                terminals.add(vid)
+                # Teaching notes can change without re-running the shell commands.
+                terminal_rec = dict(rec, terminal=True, markers=doc.get("markers", []))
+                if terminal_rec != rec:
+                    with gzip.GzipFile(recording_path(root, vid), "wb", mtime=0) as f:
+                        f.write(json.dumps(terminal_rec, ensure_ascii=False).encode("utf-8"))
+                dst = os.path.join(root, "viz", "terminals", vid + ".cast")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                text = terminal_cast(terminal_rec)
+                if not os.path.exists(dst) or open(dst, encoding="utf-8").read() != text:
+                    with open(dst, "w", encoding="utf-8") as f:
+                        f.write(text)
         problems += [f"session {vid}: {e}" for e in errs]
     # Display-only examples (viz=show) have no trace and no build job: give the ones with a tour an
     # index entry of their own, Explain only.
@@ -418,6 +466,8 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
                 e["tours"] = names
         if e["id"] in recorded:
             modes.append("simulate")
+        if e["id"] in terminals:
+            modes.append("terminal")
         e["modes"] = modes
     # A display-only or session entry whose tour or recording went away has nothing left to show.
     index_entries[:] = [e for e in index_entries if e["modes"] or e.get("viz") not in ("show", "session")]
@@ -425,7 +475,7 @@ def publish(root, codes, session_blocks, index_entries, meta=None):
     for vid in sorted(recorded - have):
         doc = sessions[vid]
         index_entries.append({"id": vid, "viz": "session", "lang": "shell", "page": doc.get("page", ""),
-                              "line": 0, "page_url": "", "error": None, "steps": 0, "modes": ["simulate"]})
+                              "line": 0, "page_url": "", "error": None, "steps": 0, "modes": ["simulate"] + (["terminal"] if vid in terminals else [])})
     return problems, sum(len(v) for v in written.values())
 
 
@@ -817,7 +867,7 @@ def record(root, vid, doc, docker, tracers, session_tag, host_shell, today, host
     rec["steps"] = finish(runs[0]["steps"])
     if branches:
         rec["branches"] = [dict(b, steps=finish(got["steps"])[b["after"]:]) for b, got in branches]
-    rec["recorded"] = {"at": today, "host": host_name, "sandbox": DIND_IMAGE, "docker": runs[0].get("docker", ""),
+    rec["recorded"] = {"at": today, "host": "demo" if doc.get("terminal") else host_name, "sandbox": DIND_IMAGE, "docker": runs[0].get("docker", ""),
                        "scenario_sha": scenario_sha(scn), "cols": (runs[0].get("term") or {}).get("cols", 100),
                        "rows": (runs[0].get("term") or {}).get("rows", 30)}
     return rec

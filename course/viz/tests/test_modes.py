@@ -165,5 +165,59 @@ class MaskTests(unittest.TestCase):
         self.assertTrue(any("branch b: removed" in x for x in d) and any("branch c: added" in x for x in d))
 
 
+
+class TerminalTests(unittest.TestCase):
+    def test_cast_preserves_output_and_marker_timing(self):
+        recording = {"title": "Demo", "recorded": {"cols": 80, "rows": 24},
+                     "markers": [{"step": 1, "title": "Read", "note": "Read the file."}],
+                     "steps": [{"cmd": "printf hi", "duration": 1, "cast": [[0.2, "hi"]]},
+                               {"cmd": "cat demo", "duration": 0.5, "cast": [[0.1, "hello\r\n"]]}]}
+        rows = [json.loads(line) for line in M.terminal_cast(recording).splitlines()]
+        self.assertEqual(rows[0]["version"], 2)
+        self.assertNotIn("timestamp", rows[0])
+        self.assertEqual(rows[0]["width"], 80)
+        self.assertIn([0.2, "o", "hi"], rows)
+        self.assertIn([1.001, "m", "Read"], rows)
+        self.assertIn([1.101, "o", "hello\r\n"], rows)
+        self.assertEqual([r[0] for r in rows[1:]], sorted(r[0] for r in rows[1:]))
+
+    def test_marker_bounds(self):
+        doc = {"version": 1, "id": "demo", "title": "Demo", "terminal": True,
+               "scenario": {"commands": ["echo hello"]},
+               "markers": [{"step": 1, "title": "Bad", "note": "Outside commands."}]}
+        self.assertIn("marker step is past the last command", M.check_session(doc))
+        doc["markers"][0]["step"] = 0
+        self.assertEqual(M.check_session(doc), [])
+
+    def test_terminal_publish_opt_in_and_stale(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "codeviz", "sessions"))
+            os.makedirs(os.path.join(root, "viz", "sessions"))
+            doc = {"version": 1, "id": "demo", "title": "Demo", "scenario": {"commands": ["echo hello"]}}
+            source = os.path.join(root, "codeviz", "sessions", "demo.json")
+            target = os.path.join(root, "viz", "sessions", "demo.json.gz")
+            rec = dict(doc, steps=[{"cmd": "echo hello", "output": "hello\n", "exit": 0}],
+                       recorded={"scenario_sha": M.scenario_sha(doc["scenario"])})
+            with gzip.open(target, "wt") as f:
+                json.dump(rec, f)
+            with open(source, "w") as f:
+                json.dump(doc, f)
+            entries = []
+            self.assertEqual(M.publish(root, {}, [], entries)[0], [])
+            self.assertEqual(entries[0]["modes"], ["simulate"])
+            doc["terminal"] = True
+            with open(source, "w") as f:
+                json.dump(doc, f)
+            self.assertEqual(M.publish(root, {}, [], entries)[0], [])
+            self.assertEqual(entries[0]["modes"], ["simulate", "terminal"])
+            self.assertTrue(os.path.isfile(os.path.join(root, "viz", "terminals", "demo.cast")))
+            doc["scenario"]["commands"] = ["echo changed"]
+            with open(source, "w") as f:
+                json.dump(doc, f)
+            self.assertTrue(M.publish(root, {}, [], entries)[0])
+            self.assertNotIn("terminal", entries[0]["modes"])
+
+
 if __name__ == "__main__":
     unittest.main()

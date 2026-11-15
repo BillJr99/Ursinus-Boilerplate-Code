@@ -58,6 +58,37 @@
       "items": {
         "$ref": "#/$defs/branch"
       }
+    },
+    "terminal": {
+      "type": "boolean",
+      "description": "Publish an asciicast v2 recording and offer Terminal mode. Existing Simulate mode remains available."
+    },
+    "markers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "step",
+          "title",
+          "note"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "description": "Explanations at zero-based command indices. No command is added by a marker."
     }
   },
   "$defs": {

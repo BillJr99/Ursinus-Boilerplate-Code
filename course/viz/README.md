@@ -1170,3 +1170,33 @@ one command to the next, with scrollback.
 - On a phone the terminal keeps the recorded width and shrinks its font to fit, down to 9 px, then
   scrolls sideways inside its own box; the page never scrolls sideways.
 - Offline, before xterm.js has ever loaded, the terminal falls back to plain text.
+
+## 24. Terminal mode
+
+Terminal replays real commands continuously, with play/pause, speed, a seek bar and teaching markers.
+It uses the same isolated recorder as Simulate. Add `"terminal": true` to a session source under
+`codeviz/sessions/`. Optional `"markers": [{"step": 0, "title": "Read a file", "note": "You read the shared file."}]`
+attaches an explanation to a zero-based command index. Markers add no commands.
+
+Run `code-viz record <id>` on minipc, then `code-viz publish`. Publishing writes a standard
+asciicast v2 file to `viz/terminals/<id>.cast` and adds Terminal to the session's modes.
+Open `viz/?mode=terminal#<id>`. Existing Simulate links keep their behavior. CI publishes recordings;
+it never invents expected output or re-records commands. Automated writes stay within `viz/`.
+
+To embed a recording, add an iframe to the chosen tutorial by hand, with a descriptive title:
+
+    <iframe title="Recorded terminal session" loading="lazy"
+      src="{{ '/viz/?mode=terminal&embed=1#example-id' | relative_url }}"
+      style="width:100%;height:740px;border:1px solid #888"></iframe>
+
+Use synthetic users and files. Keep credentials and private host paths out of commands and output.
+The recorder masks Docker IDs, timestamps and its work folder. Add session masking rules for other
+variable fields. Label build logs, version strings and other changing results as sample output in
+marker notes. Masking is a presentation aid, not a secret detector: inspect recordings before sharing.
+No real tokens or model logins belong in a scenario. The exported cast omits the recording host and
+date. Command prompts are display aids; timed output comes from the recorder's captured chunks.
+
+The local player needs no CDN or additional package. It offers selectable transcript text as well as
+Copy. Its terminal display supports plain command-line output, SGR color removal and carriage-return
+progress updates; it is not a full-screen terminal emulator. Use Simulate for cursor-addressed or
+full-screen programs. Playback runs only the recording; the browser executes no shell commands.
