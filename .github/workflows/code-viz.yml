@@ -15,7 +15,7 @@
 #   4. Refuses to commit when anything outside viz/ changed, so pages, syllabi, decks and the other
 #      submodules are never touched.
 #   5. Commits viz/ as github-actions[bot] ("[skip ci]") when it changed, fetching and rebasing onto
-#      the branch first (three tries, backing out a failed rebase), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
+#      the branch first (five tries with growing randomized waits, backing out a failed rebase), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
 #      with the workflow token starts no other workflow.
 name: code-viz build
 
@@ -77,6 +77,7 @@ jobs:
       - name: Commit viz/
         id: commit
         if: steps.any.outputs.go == '1'
+        shell: bash   # the retry waits use $RANDOM
         run: |
           git add -A viz
           if git diff --cached --quiet; then
@@ -86,16 +87,19 @@ jobs:
           git diff --cached --stat | tail -3
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "code-viz: rebuild viz/ [skip ci]"
-          for try in 1 2 3; do
+          # Five tries with growing, randomized waits (about 10 s, 20 s, 40 s, 80 s), so parallel jobs
+          # pushing to the same branch don't retry in lockstep. Three fixed 15 s retries lost the race on
+          # 2026-11-14, when about 17 pushes landed at once.
+          for try in 1 2 3 4 5; do
             git fetch -q origin "$GITHUB_REF_NAME"
             if git rebase -q "origin/$GITHUB_REF_NAME" && git push -q origin "HEAD:$GITHUB_REF_NAME"; then
               echo "pushed=1" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             git rebase --abort 2>/dev/null || true
-            sleep 15
+            [ "$try" -lt 5 ] && sleep $(( (5 << try) + RANDOM % (5 << try) ))
           done
-          echo "::error::could not push viz/ after three tries"
+          echo "::error::could not push viz/ after five tries"
           exit 1
 
       - name: Publish the site

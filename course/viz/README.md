@@ -790,8 +790,8 @@ workflow token starts no other workflow; it only does so when the repo has `code
 4. Refuses to commit, and fails, when anything outside `viz/` changed, so pages, syllabi, decks,
    `files/` and the other submodules are never touched by CI.
 5. When `viz/` changed, commits it as `github-actions[bot]` ("code-viz: rebuild viz/ [skip ci]"),
-   fetches and rebases onto the branch (three tries, backing out a failed rebase each time, for
-   pushes that land meanwhile), pushes, and starts
+   fetches and rebases onto the branch (five tries with growing, randomized waits of about 10 to
+   160 s, backing out a failed rebase each time, for pushes that land meanwhile), pushes, and starts
    "Deploy GitHub Pages" (`build-pages.yml`) by hand, since the bot's push starts no workflow.
 
 Because traces are written deterministically and unchanged traces are not rewritten, a run with no
