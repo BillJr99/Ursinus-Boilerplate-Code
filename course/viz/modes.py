@@ -1218,8 +1218,8 @@ def _no_dash(title):
     Tuning: Metrics"; a heading that already has a colon gets commas). An unspaced en dash between
     letters or digits is a range or a compound ("Precision<en dash>Recall", "10<en dash>20") and becomes
     a plain hyphen."""
-    t = re.sub(r"(?<=[A-Za-z0-9])–(?=[A-Za-z0-9])", "-", title)
-    parts = re.split(r"\s+[—–-]\s+|\s*—\s*|\s+–\s*|\s*–\s+", t)
+    t = re.sub(r"(?<=[A-Za-z0-9])\u2013(?=[A-Za-z0-9])", "-", title)
+    parts = re.split(r"\s+[\u2014\u2013-]\s+|\s*\u2014\s*|\s+\u2013\s*|\s*\u2013\s+", t)
     parts = [p.strip() for p in parts if p.strip()]
     if len(parts) <= 1:
         return t.strip()
