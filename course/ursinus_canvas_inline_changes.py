@@ -81,7 +81,8 @@ Operations
                         [url], [indent], [published]
     item.remove         module, title
     item.update         module, title, rename        -- retitle an item in place
-    item.move           module, title, position (or to_module)
+    item.move           module, title, position (or to_module) -- keeps the item id;
+                        falls back to recreating if an in-place move fails
 
 Due dates
 ---------
@@ -974,15 +975,37 @@ class Canvas(object):
         self.forget_items(module)
         return created
 
-    def move_item(self, item, source, destination, payload):
-        """Recreate an item in another module, then drop the original.
+    def move_item(self, item, source, destination, payload, keep_id=True):
+        """Move an item with its id intact, or fall back to create-then-delete.
 
-        Canvas has no "move this item to that module", so this is the same
-        create-then-delete the item.move operation has always used. Creating first
-        means a failure leaves the item where it was rather than nowhere -- but it
-        also means a failure on the second half leaves it in both places, which a
-        student would see, so that case says exactly what to go and fix.
+        Read the destination back to verify the in-place move. Automatic
+        assignment filing keeps its existing recreate behavior via keep_id=False,
+        because it can retitle the item as it moves it.
+        The fallback creates first so a failed create leaves the original alone;
+        a failed delete reports that both copies need attention.
         """
+        if keep_id:
+            original_id = item.id
+            fields = {"module_id": destination.id}
+            if "position" in payload:
+                fields["position"] = payload["position"]
+            try:
+                sleep_for_rate_limit()
+                item.edit(module_item=fields)
+                sleep_for_rate_limit()
+                moved = next((entry for entry in self.items(destination, refresh=True)
+                              if entry.id == original_id), None)
+                if moved is None:
+                    raise RuntimeError("item %s was not found in the destination"
+                                       % original_id)
+                return moved
+            except Exception as exc:
+                warn("in-place move of item %s failed (%s); falling back to "
+                     "create-then-delete" % (original_id, exc))
+            finally:
+                self.forget_items(source)
+                self.forget_items(destination)
+
         created = self.add_item(destination, payload)
         try:
             sleep_for_rate_limit()
@@ -995,6 +1018,8 @@ class Canvas(object):
                    self._label(source), exc))
         finally:
             self.forget_items(source)
+        if keep_id:
+            warn("moved by recreating; new id %s" % created.id)
         return created
 
     def remove_item(self, module, item):
@@ -1354,7 +1379,7 @@ def plan_module_moves(canvas, change, assignment, payload, lines):
 def move_payload(item, title):
     """Everything an item carries, as the payload that recreates it in another module.
 
-    A move is a create plus a delete, so anything left out of here is silently lost:
+    A recreated move is a create plus a delete, so anything left out is lost:
     an indent flattens, and a completion requirement ("students must submit this")
     disappears from a module that had one, which changes what the module says a
     student has to do. A url left out is worse than silent -- Canvas refuses to
@@ -1386,7 +1411,7 @@ def _mover(canvas, source, item, destination, title):
     payload = move_payload(item, title)
 
     def run():
-        canvas.move_item(item, source, destination, payload)
+        canvas.move_item(item, source, destination, payload, keep_id=False)
         return "moved %r to %r" % (title, canvas._label(destination))
 
     return run
@@ -1924,7 +1949,7 @@ def plan_operation(canvas, change):
 
         return lines, do
 
-    # item.move
+    # item.move keeps the item id, including moves to another module.
     if change.get("to_module"):
         destination = canvas.find_module(change["to_module"])
         if destination is None:
@@ -1932,7 +1957,8 @@ def plan_operation(canvas, change):
         payload = move_payload(item, item.title)
         if "position" in change:
             payload["position"] = int(change["position"])
-        lines.append("move item %r from %r to %r" % (item.title, module.name, destination.name))
+        lines.append("move item %r from %r to %r (keeps its id)"
+                     % (item.title, module.name, destination.name))
 
         def do():
             canvas.move_item(item, module, destination, payload)
