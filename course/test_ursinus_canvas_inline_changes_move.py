@@ -143,7 +143,7 @@ class MoveTests(unittest.TestCase):
         plan, action = changes.plan_operation(self.canvas, {
             "op": "item.move", "module": "Source", "title": item.title,
             "to_module": "Destination", "position": 5, "_index": 1})
-        self.assertEqual(plan[0], "move item 'Demo link' from 'Source' to 'Destination' (keeps its id)")
+        self.assertEqual(plan[0], "move item 'Demo link' from 'Source' to 'Destination' (tries to keep its id; recreates it with a new id if Canvas refuses the move)")
         self.assertEqual(self.events, [])
         self.assertEqual(action(), "moved 'Demo link' to 'Destination'")
         self.assertEqual(self.destination.entries[0].id, 71)

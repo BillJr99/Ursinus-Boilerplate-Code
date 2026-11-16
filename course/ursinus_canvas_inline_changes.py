@@ -1954,10 +1954,15 @@ def plan_operation(canvas, change):
         destination = canvas.find_module(change["to_module"])
         if destination is None:
             die("no module named %r to move into" % change["to_module"])
+        if getattr(destination, "id", None) == getattr(module, "id", object()):
+            die("op %d (item.move): to_module is the item's own module %r; "
+                "use position (without to_module) to reorder within a module"
+                % (change["_index"], module.name))
         payload = move_payload(item, item.title)
         if "position" in change:
             payload["position"] = int(change["position"])
-        lines.append("move item %r from %r to %r (keeps its id)"
+        lines.append("move item %r from %r to %r (tries to keep its id; "
+                     "recreates it with a new id if Canvas refuses the move)"
                      % (item.title, module.name, destination.name))
 
         def do():
