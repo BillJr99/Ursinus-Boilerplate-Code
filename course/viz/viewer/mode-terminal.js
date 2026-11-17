@@ -122,7 +122,7 @@
     const panel=node('div',{id:'terminal-player','data-provenance':sess.provenance||'recorded'}),bar=node('div',{class:'terminal-controls'});
     const toggle=node('button',{id:'terminal-play',type:'button'},'Play');toggle.disabled=reduced();toggle.onclick=play;bar.append(toggle);
     const label=node('label',{},'Speed '),speed=node('select',{id:'terminal-speed','aria-label':'Playback speed'});
-    [1,2,4,16].forEach(n=>speed.append(node('option',{value:n},n+'x')));speed.value=S.speed;
+    [0.1,0.25,0.5,0.75,1,2,4,16].forEach(n=>speed.append(node('option',{value:n},n+'x')));speed.value=S.speed;
     speed.onchange=()=>{S.speed=Number(speed.value);S.epoch=performance.now();};label.append(speed);bar.append(label);
     const theme=node('select',{id:'terminal-theme','aria-label':'Terminal theme'});
     ['system','light','dark'].forEach(x=>theme.append(node('option',{value:x},x)));
