@@ -1161,10 +1161,12 @@ The Simulate view shows the session as if it ran live. On the left is a real ter
 moves, `\r` progress bars, `clear` and full-screen programs look as they did; the screen stays from
 one command to the next, with scrollback.
 
-- Next (the `>` button, Space or the right arrow) types the next command at the prompt (35 ms a
-  character, at most 1.5 seconds a command), then plays its output at the recorded pace. The speed buttons beside the controls set 1x, fast (four times)
-  or instant; at 1x a pause longer than 2 seconds is shortened to 2. Next while a command is still
-  playing finishes it at once.
+- Simulate opens before the first command. Choose **Next command** (Space or the right arrow) to
+  show one complete input line at a time, then replay the recorded output. **Command pacing** offers
+  character typing for the next command (35 ms per character, at most 1.5 seconds per command at 1x).
+  Line mode adds 90 ms per line at 1x. Speeds are 0.5x (Slow), 1x, fast (4x), and instant; output
+  gaps are capped at 2 seconds at 1x. Choose **Finish command** to complete the current command at
+  once. With reduced motion, Next command shows the result immediately.
 - Back (`<`, the left arrow), the slider, Home and `&s=N` rebuild the exact screen at that point at
   once from the recording. The slider's first position is the first prompt, before anything ran.
 - Below the terminal, students can type the next command: if it is the command that was recorded
@@ -1201,13 +1203,15 @@ Use synthetic users and files. Keep credentials and private host paths out of co
 The recorder masks Docker IDs, timestamps and its work folder. Add session masking rules for other
 variable fields. Label build logs, version strings and other changing results as sample output in
 marker notes. Masking is a presentation aid, not a secret detector: inspect recordings before sharing.
-**Demo animations.** Add `"demo": true` to a Terminal session source. The player types commands
-at a readable presentation pace, then shows their output. Long quiet gaps are shortened for the
-demo only; the committed cast retains the recorder timings. It plays once when the pane scrolls
-into view and stops at the end. Pause and Play stay available. A reader who requests reduced
-motion sees the finished transcript with playback disabled. The Copy button resets after a short
-delay and whenever playback or seeking starts. Embedded players fill their iframe; the terminal
-gets the space left after controls, notes and transcript access.
+**Demo playback.** Terminal opens paused; choose **Play** to start. For sessions with `"demo": true`,
+commands appear one complete input line at a time, then their output plays. **Command pacing**
+can switch to character typing (24 characters per second at 1x); line mode adds 90 ms per line at
+1x. Changing pacing returns the demo to its paused start. Long quiet gaps are shortened in demos
+only. Other sessions keep their original cast timing and have no command pacing control. Speed
+settings apply to playback, including **Instant**, which jumps to the end on Play. With reduced
+motion the player opens on the finished transcript with Play disabled; seeking is still available.
+The Copy button resets after a short delay and whenever playback or seeking starts. Embedded
+players fill their iframe; the terminal gets the space left after controls, notes and transcript access.
 
 A demo has one of two provenances. `"provenance": "recorded"` (the default) uses output captured
 by `code-viz record` and always displays **Recorded output**. `"provenance": "scripted"` uses
