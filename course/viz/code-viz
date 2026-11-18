@@ -767,7 +767,8 @@ Ursinus-Boilerplate-Code. Each course repo carries a short caller, `.github/work
 `Ursinus-Boilerplate-Code@main`. Changing the shared file changes every course at once.
 
 **When it runs.** On a push to `gh-pages` that changes `_pages/**.md`, `files/**`,
-`viz/manifest.json` or `codeviz/**` (tours and session scenarios); by hand (Actions, code-viz, Run workflow, or `gh workflow run code-viz.yml`);
+`_config.yml`, `.github/workflows/code-viz.yml`, `viz/**` or `codeviz/**`; by hand
+(Actions, code-viz, Run workflow, or `gh workflow run code-viz.yml`);
 and after the course's `update-submodules.yml` ("Reset and Sync Submodules") moved the `code`
 submodule. That workflow's last step starts code-viz itself, because a commit pushed with the
 workflow token starts no other workflow; it only does so when the repo has `code-viz.yml` and the
@@ -796,6 +797,13 @@ workflow token starts no other workflow; it only does so when the repo has `code
 Because traces are written deterministically and unchanged traces are not rewritten, a run with no
 real change commits nothing. What CI does not do: label blocks, add links (`code-viz links`), record
 agent examples (needs Ollama: record on minipc, section 12), or update expected outputs.
+
+**Syncing a child course into its parent.** Merge the child into the parent checkout.
+If the merge reports generated code-viz conflicts, run `bash path/to/resolve-child-viz.sh`
+from the parent checkout. It stages the incoming child's version of each conflicted
+generated path. Source conflicts, including `viz/manifest.json` and `viz/notebooks.json`,
+still need manual resolution. When you push the completed merge, CI rebuilds the
+parent's viz output even if the merge changed only generated files.
 
 **Adding it to a course repo.** Copy `course/viz/workflow.yml` to `.github/workflows/code-viz.yml`,
 and add the last step of `update-submodules.yml` (the "Rebuild code-viz pages when the code
