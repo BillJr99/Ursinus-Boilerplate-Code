@@ -87,7 +87,7 @@ Operations
     module.update       name (or id), [rename], [position], [published]
     module.delete       name (or id)
     item.add            module, title, type, [content: assignment name], [position],
-                        [url], [new_tab], [indent], [published]
+                        [url], [new_tab], [indent], [published], [publish_module]
     item.remove         module, title
     item.update         module, title, then any of: rename, url, new_tab, published,
                         indent                       -- edit an item in place. Before
@@ -171,11 +171,14 @@ reported and skipped, and the count is repeated at the end of the run so that a
 missing item cannot hide behind "all changes applied"; pass `module:` naming a
 module outright to place it anyway. `--no-modules` turns all of this off.
 
-Adding an item publishes its module, the way a deploy does, and an assignment or
-module created here is published unless the operation says `published: false`. An
-item filed into a module nobody can see is not filed at all. The dry run names
-every module that would be published, so an unpublished week you meant to keep
-back is visible before anything is written.
+Filing a created or moved assignment publishes its module, the way a deploy does,
+and an assignment or module created here is published unless the operation says
+`published: false`. An item filed into a module nobody can see is not filed at all.
+The dry run names every module that would be published, so an unpublished week you
+meant to keep back is visible before anything is written. An explicit `item.add`
+is the exception: it leaves its module's published state as it is unless it says
+`publish_module: true` (older copies of this tool published the module on every
+item.add), so adding a reading to a week kept back does not release the week.
 
 One document, one pass
 ----------------------
@@ -259,6 +262,9 @@ host case, trailing slash, percent-encoding). Then:
     module or item unpublished      commented module.update / item.update published,
                                     never active: hiding is deliberate, and publishing
                                     an Assignment item publishes the assignment
+    item missing from a module      commented item.add: adding to a week kept back
+    unpublished in Canvas, or for   would release it, and a published item for a
+    an unpublished assignment       hidden assignment would publish the assignment
     assignment item filed elsewhere commented item.move back, never a second copy
     planned link with an empty url  skipped, with a comment
     item type changed               commented item.remove + item.add
@@ -1027,17 +1033,21 @@ class Canvas(object):
 
     # -- writes ------------------------------------------------------------
 
-    def add_item(self, module, payload):
-        """Add an item to a module and publish the module, as a deploy does.
+    def add_item(self, module, payload, publish_module=True):
+        """Add an item to a module and, unless told not to, publish the module.
 
-        This matches add_module_item in ursinus_canvas.py. An item filed into a
-        module nobody can see is not filed at all, so the module goes out with it;
-        the plan says which module will be published before anything is written.
+        Publishing matches add_module_item in ursinus_canvas.py, and is what the
+        automatic filing of an assignment created here does: an item filed into a
+        module nobody can see is not filed at all, and the plan says which module
+        will be published before anything is written. An explicit item.add passes
+        publish_module=False unless its operation asks, so that adding a reading to
+        a week kept back does not release the week.
         """
         sleep_for_rate_limit()
         created = module.create_module_item(module_item=payload)
-        module.edit(module={"published": True})
-        module.published = True
+        if publish_module:
+            module.edit(module={"published": True})
+            module.published = True
         self.forget_items(module)
         return created
 
@@ -2000,11 +2010,17 @@ def plan_operation(canvas, change):
             # item.add reproduces the deploy's item rather than one that opens in place.
             payload["new_tab"] = as_bool(change["new_tab"])
         payload["published"] = as_bool(change.get("published", True))
+        publish_module = as_bool(change.get("publish_module", False))
         lines.append("add item %r to module %r" % (payload["title"], module.name))
         lines.append("  %s" % payload)
+        if publish_module:
+            lines.append("  and publish module %r" % module.name)
+        elif getattr(module, "published", None) is False:
+            lines.append("  (module %r is unpublished and stays so; the item is not visible "
+                         "until it is published)" % module.name)
 
         def do():
-            created = canvas.add_item(module, payload)
+            created = canvas.add_item(module, payload, publish_module=publish_module)
             return "added item %r to %r" % (created.title, module.name)
 
         return lines, do
@@ -2417,6 +2433,7 @@ class ModuleDiff(object):
         self.active, self.suggested = [], []
         self.counts = Counter()
         self.ids, self.names_by_id = {}, {}
+        self.assignments = dict(live_assignments)
         for name, assignment in live_assignments.items():
             self.ids[name] = assignment.id
             self.names_by_id[str(assignment.id)] = name
@@ -2502,6 +2519,7 @@ def compare_modules(canvas, plan, live_assignments, created, moved):
                 for position, entry in enumerate(wants, 1):
                     if not item_is_addable(entry):
                         continue
+                    diff.counts["item_suggest"] += 1
                     diff.add(item_add_lines(want["name"], entry, position), comment_out=True)
             continue
 
@@ -2727,6 +2745,7 @@ def compare_items(diff, module, live_name, want, wants, suggest_only=False):
     simulated = list(live)
     last = -1
     noted_append = False
+    module_hidden = getattr(module, "published", None) is False
     for index, entry in enumerate(wants):
         if index in pairs:
             last = max(last, _index_of(simulated, pairs[index]))
@@ -2763,16 +2782,30 @@ def compare_items(diff, module, live_name, want, wants, suggest_only=False):
                 continue
         last += 1
         simulated.insert(last, entry)
-        diff.counts["item_add"] += 1
+        position, comment = last + 1, None
         if touched:
-            comment = None
+            position = None
             if not noted_append:
                 comment = ("no position: an assignment operation above also changes this "
                            "module, so this is appended")
                 noted_append = True
-            add(item_add_lines(live_name, entry, None, comment))
+        hold = None
+        if module_hidden:
+            hold = ("module %s is unpublished in Canvas; adding %s would make it part of a "
+                    "week you are keeping back (and older copies of this tool publish the "
+                    "module on item.add)" % (yaml_quote(live_name), yaml_quote(payload["title"])))
+        elif entry["kind"] == "assignment" and getattr(
+                diff.assignments.get(entry["name"]), "published", None) is False:
+            hold = ("assignment %s is unpublished in Canvas, and filing a published item for "
+                    "it would publish it" % yaml_quote(entry["name"]))
+        if hold or suggest_only:
+            diff.counts["item_suggest"] += 1
+            if hold:
+                diff.note(hold + "; add it by hand if you mean to:")
+            diff.add(item_add_lines(live_name, entry, position, comment), comment_out=True)
         else:
-            add(item_add_lines(live_name, entry, last + 1))
+            diff.counts["item_add"] += 1
+            add(item_add_lines(live_name, entry, position, comment))
 
     # Order: suggested only, because reordering released content is a decision.
     placed = [pairs[i] for i in sorted(pairs)]

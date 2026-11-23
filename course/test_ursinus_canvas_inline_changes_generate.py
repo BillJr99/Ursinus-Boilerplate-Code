@@ -451,6 +451,50 @@ class GenerateModulesTests(unittest.TestCase):
         self.assertEqual(ops, [])
 
 
+    # -- re-review: adding to what is hidden ---------------------------------
+
+    def test_add_into_an_unpublished_module_is_only_suggested_and_not_counted(self):
+        self.module(RECURSION).published = False
+        self.module(RECURSION).entries.remove(self.item(RECURSION, "Chapter 2"))
+        text, ops = self.generate()
+        self.assertEqual(ops, [])
+        self.assertIn("is unpublished in Canvas; adding", text)
+        self.assertIn("#   - op: item.add", self.suggestions(text))
+        self.assertIn("# items:      0 to add,", text)
+
+    def test_add_of_an_unpublished_assignment_item_is_only_suggested(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        essay.published = False
+        self.module(RECURSION).entries.remove(self.item(RECURSION, ESSAY))
+        text, ops = self.generate()
+        self.assertEqual(ops, [])
+        self.assertIn("would publish it", text)
+        self.assertIn("# items:      0 to add,", text)
+
+    def test_missing_module_items_are_not_counted_as_adds(self):
+        self.course.modules.remove(self.module(RECURSION))
+        text, _ = self.generate()
+        self.assertIn("# items:      0 to add,", text)
+
+    def test_item_add_leaves_the_module_published_state_unless_asked(self):
+        module = self.module(RECURSION)
+        module.published = False
+        canvas = self.canvas()
+        with patch.object(changes, "sleep_for_rate_limit"):
+            lines, action = changes.plan_operation(canvas, {
+                "op": "item.add", "module": RECURSION, "title": "Extra",
+                "type": "SubHeader", "_index": 1})
+            action()
+            self.assertIs(module.published, False)
+            self.assertIn("stays so", " ".join(lines))
+            lines, action = changes.plan_operation(canvas, {
+                "op": "item.add", "module": RECURSION, "title": "Extra 2",
+                "type": "SubHeader", "publish_module": True, "_index": 2})
+            action()
+        self.assertIs(module.published, True)
+        self.assertIn("and publish module", " ".join(lines))
+
+
 class ItemOpsTests(unittest.TestCase):
     def test_item_ops_into_a_module_created_in_the_same_document_are_refused(self):
         doc = changes.parse_document(
