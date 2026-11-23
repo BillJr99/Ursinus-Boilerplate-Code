@@ -32,7 +32,16 @@ Two modes
 shell and writes a change document to stdout. Run it from the repo root; it reads
 `_pages/syllabus.md` (or --markdown) and reports every assignment whose due date,
 points, or page link has drifted from the shell, plus assignments the syllabus
-does not account for. Nothing is written to Canvas in this mode.
+does not account for. It then compares the modules page: every module a full
+deploy would create (one per schedule entry, named by its date header, plus the
+standing Resources and Overarching modules) and every item it would file in each
+(the "Activity:" link, each assignment, each "Handed Out" or other non-assignment
+deliverable, each reading, and the standing course links), with the titles, links,
+new_tab, published state, and order the deploy uses. A missing module becomes a
+module.create, a missing item an item.add, and a drifted title, link, or published
+state an item.update (or module.update); anything unaccounted for, a changed item
+type, or a reorder is only suggested, commented out. --no-modules restricts the
+comparison to assignments. Nothing is written to Canvas in this mode.
 
     python code/course/ursinus_canvas_inline_changes.py --generate -c 12345 > changes.yaml
     python code/course/ursinus_canvas_inline_changes.py --generate -c 12345 \
@@ -78,9 +87,10 @@ Operations
     module.update       name (or id), [rename], [position], [published]
     module.delete       name (or id)
     item.add            module, title, type, [content: assignment name], [position],
-                        [url], [indent], [published]
+                        [url], [new_tab], [indent], [published]
     item.remove         module, title
-    item.update         module, title, rename        -- retitle an item in place
+    item.update         module, title, then any of: rename, url, new_tab, published,
+                        indent                       -- edit an item in place
     item.move           module, title, position (or to_module) -- keeps the item id;
                         falls back to recreating if an in-place move fails
 
@@ -208,24 +218,50 @@ refuse to run if there are any, unless you pass --force-graded.
 
 What --generate compares
 ------------------------
-Assignments only: due date, points, and the page link in the description, plus a
+Assignments: due date, points, and the page link in the description, plus a
 commented-out delete for anything in Canvas the syllabus does not name and a
 commented-out rubric replacement for anything whose rubric lives in the
-repository. Existing module items are not diffed, because reconciling them safely
-means deciding what a reordered module means for released content;
-`rebuild_all_modules` in `ursinus_canvas_update_schedule_inplace.py` is the tool
-that takes that on. An assignment being *created*, though, carries the day it is
-due and the day it is handed out, so applying the document files it on the modules
-page where a full deploy would have put it.
+repository. An assignment being *created* carries the day it is due and the day it
+is handed out, so applying the document files it on the modules page where a full
+deploy would have put it.
 
-Every delete and every rubric replacement it emits is commented out and annotated
-with what it would cost, so a generated document can never destroy student work by
-being piped straight back in.
+The modules page, unless --no-modules: the expected modules and items are not
+re-derived here. They come from `plan_modules` in `ursinus_canvas.py`, the same
+function a full deploy walks to create them, so the two cannot disagree. Planned
+modules are matched to live ones by name, then case-insensitively, then (for a
+session module whose title has changed) by its date header. Within a module, an
+assignment's item is matched by the assignment it points at, every other item by
+title (exact, then case-insensitive), then a link by its url. Then:
+
+    module missing                  module.create name, position, published
+                                    (its items follow commented out: they can only
+                                    be added once the module exists, so apply and
+                                    run --generate again)
+    module renamed or unpublished   module.update rename / published
+    item missing                    item.add module, title, type, url, new_tab,
+                                    content (for an assignment), position, published
+    item title, url, new_tab, or    item.update rename / url / new_tab / published
+    published drifted               (id and position kept)
+    item type changed               commented item.remove + item.add
+    items out of order              commented item.move
+    item or module not planned      commented item.remove / module.delete
+
+An assignment created or re-dated by this same document is left to its
+assignment.create or assignment.due, which files or moves its items, so those items
+are not diffed twice. `--homepage` names the address the deploy was given with -w
+when it is not the syllabus's course_homepage.
+
+Every delete, removal, and rubric replacement it emits is commented out and
+annotated with what it would cost, so a generated document can never destroy
+student work or released content by being piped straight back in.
 
 Requires `canvasapi`. PyYAML is used when present; without it, JSON and
 dict-style input still parse. --generate additionally needs `python-frontmatter`,
-`python-dateutil`, and `pytz`, which the sibling schedule script already requires;
-so does anything naming a `rubricpath`, which has to read the assignment page.
+`python-dateutil`, and `pytz`, which the sibling schedule script already requires,
+and, to compare the modules page, `ursinus_canvas.py` beside this file with its own
+imports (`requests` and PyYAML as well); --no-modules drops that last need.
+Anything naming a `rubricpath` needs `python-frontmatter` too, to read the
+assignment page.
 --check needs none of them, except that it can only validate a rubric file when
 `python-frontmatter` is installed, and says so when it cannot.
 
@@ -241,6 +277,7 @@ about what a student may upload.
 
 import argparse
 import ast
+import contextlib
 import json
 import os
 import random
@@ -1376,6 +1413,28 @@ def plan_module_moves(canvas, change, assignment, payload, lines):
     return moves
 
 
+def item_update_fields(change):
+    """The module_item fields an item.update names, in Canvas's vocabulary.
+
+    rename alone is the original retitle; url, new_tab, published, and indent edit the item
+    in place, keeping its id and position, which is what a generated document needs when a
+    reading's link has drifted or a deploy's item was unpublished by hand.
+    """
+    fields = {}
+    new_title = str(change.get("rename") or "").strip()
+    if new_title:
+        fields["title"] = new_title
+    if change.get("url"):
+        fields["external_url"] = str(change["url"]).strip()
+    if "new_tab" in change:
+        fields["new_tab"] = as_bool(change["new_tab"])
+    if "published" in change:
+        fields["published"] = as_bool(change["published"])
+    if "indent" in change:
+        fields["indent"] = int(change["indent"])
+    return fields
+
+
 def move_payload(item, title):
     """Everything an item carries, as the payload that recreates it in another module.
 
@@ -1907,6 +1966,10 @@ def plan_operation(canvas, change):
             payload["position"] = int(change["position"])
         if "indent" in change:
             payload["indent"] = int(change["indent"])
+        if "new_tab" in change:
+            # What a deploy sets on every reading and link it files, so that a generated
+            # item.add reproduces the deploy's item rather than one that opens in place.
+            payload["new_tab"] = as_bool(change["new_tab"])
         payload["published"] = as_bool(change.get("published", True))
         lines.append("add item %r to module %r" % (payload["title"], module.name))
         lines.append("  %s" % payload)
@@ -1935,17 +1998,29 @@ def plan_operation(canvas, change):
         return lines, do
 
     if op == "item.update":
-        new_title = str(change.get("rename") or "").strip()
-        if not new_title:
-            die("op %d (item.update): 'rename' is required" % change["_index"])
-        lines.append("retitle item %r in module %r" % (item.title, module.name))
-        lines.append("  to %r (position and link unchanged)" % new_title)
+        fields = item_update_fields(change)
+        if not fields:
+            die("op %d (item.update): name at least one of rename, url, new_tab, published, "
+                "or indent" % change["_index"])
+        if "external_url" in fields and getattr(item, "type", None) != "ExternalUrl":
+            die("op %d (item.update): %r is a %s item, and only an ExternalUrl item has a url"
+                % (change["_index"], item.title, getattr(item, "type", "?")))
+        if list(fields) == ["title"]:
+            lines.append("retitle item %r in module %r" % (item.title, module.name))
+            lines.append("  to %r (position and link unchanged)" % fields["title"])
+        else:
+            lines.append("update item %r in module %r (id and position unchanged)"
+                         % (item.title, module.name))
+            for key, value in fields.items():
+                lines.append("  %s: %r -> %r" % (key, getattr(item, key, None), value))
 
         def do():
             sleep_for_rate_limit()
-            item.edit(module_item={"title": new_title})
+            item.edit(module_item=dict(fields))
             canvas.forget_items(module)
-            return "retitled %r to %r in %r" % (item.title, new_title, module.name)
+            if list(fields) == ["title"]:
+                return "retitled %r to %r in %r" % (item.title, fields["title"], module.name)
+            return "updated %r in %r: %s" % (item.title, module.name, ", ".join(fields))
 
         return lines, do
 
@@ -2145,7 +2220,366 @@ def yaml_quote(value):
     return '"%s"' % text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def generate(canvas, markdown_path):
+# --------------------------------------------------------------------------
+# --generate: the modules page
+# --------------------------------------------------------------------------
+
+def deploy_module_plan(markdown_path, homepage=None):
+    """The deploy's own plan of the modules page, from ursinus_canvas.plan_modules.
+
+    That function is what a full deploy walks to create the modules and file their items,
+    so comparing against it means comparing against exactly what a deploy would write:
+    the same module names (date header, reschedule:, cdate:), the same items in the same
+    order, the same titles, links, new_tab, and published state. Nothing here re-derives
+    any of it.
+
+    The homepage is the syllabus's course_homepage unless one is passed; a deploy takes it
+    from -w, which is normally the same address.
+    """
+    _sibling_path()
+    try:
+        import frontmatter
+        import ursinus_canvas as deploy
+    except ImportError as exc:
+        die("comparing the modules page needs ursinus_canvas.py beside this script, and its "
+            "dependencies (%s). Pass --no-modules to compare assignments only." % exc)
+
+    with open(markdown_path, "r", encoding="utf-8") as fh:
+        postdict = frontmatter.loads(fh.read()).to_dict()
+    info = postdict.get("info") or {}
+    if homepage is None:
+        homepage = str(info.get("course_homepage") or "")
+    if not homepage:
+        warn("no course_homepage in the syllabus and no --homepage: relative links will be "
+             "compared as a deploy given an empty -w would write them")
+    lia_base = deploy.get_lia_base(deploy.load_site_config(markdown_path))
+
+    # The deploy reports an unknown module: tag with print(); stdout here is the change
+    # document, so its chatter goes to stderr instead.
+    with contextlib.redirect_stdout(sys.stderr):
+        return deploy.plan_modules(postdict, homepage, lia_base)
+
+
+def op_lines(op, fields, comment=None):
+    """One operation as YAML lines, without the leading indent or comment marker."""
+    lines = ["- op: %s" % op]
+    for key, value in fields:
+        if isinstance(value, bool):
+            text = "true" if value else "false"
+        elif isinstance(value, int):
+            text = "%d" % value
+        else:
+            text = yaml_quote(value)
+        lines.append("  %s: %s" % (key, text))
+    if comment:
+        lines[-1] += "   # %s" % comment
+    return lines
+
+
+def _text(value):
+    return str(value or "").strip()
+
+
+def _index_of(seq, thing):
+    """Where thing sits in seq, by identity: two module items can compare equal."""
+    return next(n for n, x in enumerate(seq) if x is thing)
+
+
+def _by_position(things):
+    return sorted(things, key=lambda t: (getattr(t, "position", None) or 0))
+
+
+def match_modules(canvas, expected, live):
+    """Pair each planned module with the live module it became.
+
+    Exact name first, then case-insensitive, then, for a session module, the one live
+    module carrying the same date header (its title has drifted). A standing module is
+    matched by name only. Returns [(planned, live or None)] and the live modules left over.
+    """
+    unclaimed = list(live)
+    pairs = []
+
+    def take(test):
+        hits = [m for m in unclaimed if test(m)]
+        return hits[0] if hits else None
+
+    for want in expected:
+        name = _text(want["name"])
+        hit = take(lambda m: _text(canvas._label(m)) == name)
+        if hit is None:
+            hit = take(lambda m: _text(canvas._label(m)).lower() == name.lower())
+        if hit is None and want.get("tag") is None:
+            day = module_date(name)
+            if day is not None:
+                same_day = [m for m in unclaimed if module_date(canvas._label(m)) == day]
+                if len(same_day) == 1:
+                    hit = same_day[0]
+        if hit is not None:
+            unclaimed.remove(hit)
+        pairs.append((want, hit))
+    return pairs, unclaimed
+
+
+def compare_modules(canvas, plan, live_assignments, created, moved):
+    """Diff every planned module and module item against the live shell.
+
+    created: assignment names this document creates (assignment.create files both the
+    assignment's item and its "Handed Out" item, so neither is diffed here).
+    moved: assignment names whose due date this document moves (assignment.due moves the
+    assignment's item, so that item is not diffed here either).
+
+    Returns (active, suggested, counts): active operation lines for the changes list,
+    commented-out suggestions for after it, and a tally for the header. Nothing that removes
+    content is ever active: unaccounted modules and items, type changes, and reordering come
+    back only as suggestions.
+    """
+    active, suggested = [], []
+    counts = Counter()
+    ids = {}
+    names_by_id = {}
+    for name, assignment in live_assignments.items():
+        ids[name] = assignment.id
+        names_by_id[str(assignment.id)] = name
+
+    def add(lines, comment_out=False):
+        target = suggested if comment_out else active
+        target.extend(("#   " if comment_out else "  ") + line for line in lines)
+        if not comment_out:
+            target.append("")
+
+    def handout_of(title):
+        return _text(title).lower().endswith(HANDOUT_SUFFIX.strip().lower())
+
+    pairs, leftover = match_modules(canvas, plan["modules"], _by_position(canvas.modules()))
+
+    for want, module in pairs:
+        wants = []
+        for entry in want["items"]:
+            payload = entry["payload"]
+            if entry["kind"] == "assignment" and (entry["name"] in created
+                                                   or entry["name"] in moved):
+                continue
+            if (entry["kind"] == "deliverable" and handout_of(payload["title"])
+                    and strip_marker(payload["title"]) in created):
+                continue
+            wants.append(entry)
+
+        if module is None:
+            counts["module_create"] += 1
+            add(op_lines("module.create", [("name", want["name"]),
+                                           ("position", int(want["position"])),
+                                           ("published", bool(want["published"]))]))
+            if wants:
+                suggested.append("# Module %s does not exist yet, so its %d item(s) cannot be "
+                                 "added in this pass." % (yaml_quote(want["name"]), len(wants)))
+                suggested.append("# Apply the module.create above, then run --generate again, "
+                                 "or uncomment these in a second document:")
+                for position, entry in enumerate(wants, 1):
+                    add(item_add_lines(want["name"], entry, position), comment_out=True)
+            continue
+
+        live_name = canvas._label(module)
+        fields = []
+        if _text(live_name) != _text(want["name"]):
+            fields.append(("rename", want["name"]))
+        if want["published"] and getattr(module, "published", None) is False:
+            fields.append(("published", True))
+        if fields:
+            counts["module_update"] += 1
+            note = "Canvas has it unpublished" if ("published", True) in fields else None
+            add(op_lines("module.update", [("name", live_name)] + fields, note))
+
+        compare_items(canvas, module, live_name, wants, ids, names_by_id, created | moved,
+                      add, suggested, counts)
+
+    for module in leftover:
+        counts["module_orphan"] += 1
+        try:
+            count = len(canvas.items(module))
+        except Exception:
+            count = None
+        suggested.append("# Module %s is not one the syllabus creates."
+                         % yaml_quote(canvas._label(module)))
+        add(op_lines("module.delete", [("name", canvas._label(module))],
+                     "%s item(s); the assignments they point at survive"
+                     % ("unknown" if count is None else count)), comment_out=True)
+
+    return active, suggested, counts
+
+
+def item_add_lines(module_name, entry, position=None, comment=None):
+    """An item.add carrying every field the deploy sets on this item."""
+    payload = entry["payload"]
+    fields = [("module", module_name), ("title", payload["title"]), ("type", payload["type"])]
+    if entry["kind"] == "assignment":
+        fields.append(("content", entry["name"]))
+    if payload.get("external_url"):
+        fields.append(("url", payload["external_url"]))
+    if "new_tab" in payload:
+        fields.append(("new_tab", bool(payload["new_tab"])))
+    if position is not None:
+        fields.append(("position", int(position)))
+    fields.append(("published", bool(payload.get("published", True))))
+    return op_lines("item.add", fields, comment)
+
+
+def compare_items(canvas, module, live_name, wants, ids, names_by_id, skipped, add,
+                  suggested, counts):
+    """Diff one module's planned items against its live items. See compare_modules."""
+    live = _by_position(canvas.items(module))
+    used = set()
+    pairs = {}  # index into wants -> live item
+
+    def free(test):
+        for item in live:
+            if id(item) not in used and test(item):
+                return item
+        return None
+
+    def claim(index, item):
+        if item is not None:
+            pairs[index] = item
+            used.add(id(item))
+
+    # An assignment item is the one pointing at the assignment, whatever it is titled.
+    for index, entry in enumerate(wants):
+        if entry["kind"] == "assignment" and entry["name"] in ids:
+            target = str(ids[entry["name"]])
+            claim(index, free(lambda i: getattr(i, "type", None) == "Assignment"
+                              and str(getattr(i, "content_id", "")) == target))
+
+    # Then by title, exactly and then ignoring case, preferring an item of the same type.
+    for fold in (lambda t: t, lambda t: t.lower()):
+        for index, entry in enumerate(wants):
+            if index in pairs:
+                continue
+            title, kind = fold(_text(entry["payload"]["title"])), entry["payload"]["type"]
+            hit = free(lambda i: fold(_text(canvas._label(i))) == title
+                       and getattr(i, "type", None) == kind)
+            if hit is None and entry["kind"] != "assignment":
+                hit = free(lambda i: fold(_text(canvas._label(i))) == title)
+            claim(index, hit)
+
+    # Then a link whose title drifted: the same url under another title.
+    for index, entry in enumerate(wants):
+        url = _text(entry["payload"].get("external_url"))
+        if index in pairs or not url:
+            continue
+        claim(index, free(lambda i: getattr(i, "type", None) == "ExternalUrl"
+                          and _text(getattr(i, "external_url", None)) == url))
+
+    titles = Counter(_text(canvas._label(i)) for i in live)
+
+    for index, entry in enumerate(wants):
+        item = pairs.get(index)
+        if item is None:
+            continue
+        payload = entry["payload"]
+        have_title = canvas._label(item)
+        have_type = getattr(item, "type", None)
+
+        if have_type != payload["type"]:
+            counts["item_suggest"] += 1
+            suggested.append("# %s in %s is a %s item; a deploy writes a %s item. An item's "
+                             "type cannot be edited, so replace it:"
+                             % (yaml_quote(have_title), yaml_quote(live_name), have_type,
+                                payload["type"]))
+            add(op_lines("item.remove", [("module", live_name), ("title", have_title)]),
+                comment_out=True)
+            add(item_add_lines(live_name, entry), comment_out=True)
+            continue
+
+        fields, notes = [], []
+        if _text(have_title) != _text(payload["title"]):
+            fields.append(("rename", payload["title"]))
+            notes.append("Canvas title %s" % yaml_quote(have_title))
+        if payload["type"] == "ExternalUrl":
+            have_url = _text(getattr(item, "external_url", None))
+            if have_url != _text(payload.get("external_url")):
+                fields.append(("url", payload["external_url"]))
+                notes.append("Canvas has %s" % (have_url or "no url"))
+            have_tab = getattr(item, "new_tab", None)
+            if "new_tab" in payload and have_tab is not None \
+                    and bool(have_tab) != bool(payload["new_tab"]):
+                fields.append(("new_tab", bool(payload["new_tab"])))
+        if payload.get("published", True) and getattr(item, "published", None) is False:
+            fields.append(("published", True))
+            notes.append("Canvas has it unpublished")
+        if not fields:
+            continue
+
+        lines = op_lines("item.update", [("module", live_name), ("title", have_title)] + fields,
+                         "; ".join(notes) or None)
+        if titles[_text(have_title)] > 1:
+            counts["item_suggest"] += 1
+            suggested.append("# %d items in %s are titled %s, so item.update cannot tell them "
+                             "apart; edit this one by hand:"
+                             % (titles[_text(have_title)], yaml_quote(live_name),
+                                yaml_quote(have_title)))
+            add(lines, comment_out=True)
+        else:
+            counts["item_update"] += 1
+            add(lines)
+
+    # Missing items, positioned where the deploy would have put them. The adds apply in
+    # document order, each shifting what follows it, so the positions are worked out on a
+    # simulated copy of the module rather than read off the live one.
+    simulated = list(live)
+    last = -1
+    for index, entry in enumerate(wants):
+        if index in pairs:
+            last = max(last, _index_of(simulated, pairs[index]))
+            continue
+        if entry["kind"] == "assignment" and entry["name"] not in ids:
+            # Neither in Canvas nor created by this document (its name in the syllabus does
+            # not read the same way to the assignment comparison), so an item.add could not
+            # resolve its content. Say so rather than emit an operation that cannot apply.
+            counts["item_suggest"] += 1
+            suggested.append("# %s files an item for assignment %s, which is not in Canvas. "
+                             "Create the assignment, then:"
+                             % (yaml_quote(live_name), yaml_quote(entry["name"])))
+            add(item_add_lines(live_name, entry), comment_out=True)
+            continue
+        last += 1
+        simulated.insert(last, entry)
+        counts["item_add"] += 1
+        add(item_add_lines(live_name, entry, last + 1))
+
+    # Order: suggested only, because reordering released content is a decision.
+    placed = [pairs[i] for i in sorted(pairs)]
+    order = [_index_of(live, i) for i in placed]
+    if order != sorted(order):
+        counts["item_suggest"] += 1
+        suggested.append("# The items in %s are not in the order a deploy files them. To "
+                         "reorder (positions assume the item.add operations above have run "
+                         "and any unaccounted items sit at the end):" % yaml_quote(live_name))
+        for index in sorted(pairs):
+            # every planned item is present once the adds have run, so its place in the
+            # plan is its position
+            item = pairs[index]
+            want_at = index + 1
+            if getattr(item, "position", None) != want_at:
+                add(op_lines("item.move", [("module", live_name),
+                                           ("title", canvas._label(item)),
+                                           ("position", want_at)]), comment_out=True)
+
+    # Live items the plan does not account for: suggestions only, never active.
+    for item in live:
+        if id(item) in used:
+            continue
+        if getattr(item, "type", None) == "Assignment" and \
+                names_by_id.get(str(getattr(item, "content_id", ""))) in skipped:
+            continue  # an assignment op in this document is already moving or filing it
+        counts["item_orphan"] += 1
+        kind = getattr(item, "type", "?")
+        detail = _text(getattr(item, "external_url", None)) or kind
+        suggested.append("# %s in %s is not an item the syllabus files there (%s)."
+                         % (yaml_quote(canvas._label(item)), yaml_quote(live_name), detail))
+        add(op_lines("item.remove", [("module", live_name), ("title", canvas._label(item))]),
+            comment_out=True)
+
+
+def generate(canvas, markdown_path, modules=True, homepage=None):
     """Emit a change document describing repo-vs-Canvas drift."""
     if not os.path.exists(markdown_path):
         die("no syllabus at %s (run this from the repository root, or pass --markdown)"
@@ -2154,6 +2588,7 @@ def generate(canvas, markdown_path):
     expected, info = syllabus_expectations(markdown_path)
     if not expected:
         die("no deliverables found in %s" % markdown_path)
+    plan = deploy_module_plan(markdown_path, homepage) if modules else None
 
     lock = course_end_lock(info)
     module_days = {module_date(canvas._label(m)) for m in canvas.modules()}
@@ -2166,6 +2601,7 @@ def generate(canvas, markdown_path):
     out, deferred = [], []
     counts = {"create": 0, "due": 0, "points": 0, "url": 0, "orphan": 0,
               "nomodule": 0, "rubric": 0}
+    created, moved = set(), set()   # assignment names this document creates or re-dates
 
     for name in sorted(expected):
         want = expected[name]
@@ -2174,6 +2610,7 @@ def generate(canvas, markdown_path):
 
         if assignment is None:
             counts["create"] += 1
+            created.add(name)
             out.append("  - op: assignment.create")
             out.append("    name: %s" % yaml_quote(name))
             out.append("    points: %g" % want["points"])
@@ -2216,6 +2653,7 @@ def generate(canvas, markdown_path):
         have_due = getattr(assignment, "due_at", None)
         if want_due and (have_due or "").replace(".000Z", "Z") != want_due:
             counts["due"] += 1
+            moved.add(name)
             out.append("  - op: assignment.due")
             out.append("    name: %s" % yaml_quote(name))
             out.append("    due: %s   # Canvas has %s"
@@ -2240,16 +2678,37 @@ def generate(canvas, markdown_path):
 
     orphans = sorted(set(live) - set(expected))
 
+    module_out, module_suggested, mcounts = [], [], Counter()
+    if plan is not None:
+        module_out, module_suggested, mcounts = compare_modules(
+            canvas, plan, live, created, moved)
+        if module_out:
+            out.append("  # ---- the modules page ----")
+            out.append("")
+            out.extend(module_out)
+
     print("# Generated by ursinus_canvas_inline_changes.py --generate")
     print("# repository: %s" % markdown_path)
     print("# course:     %s (%s)" % (canvas.course.id, getattr(canvas.course, "name", "?")))
     print("# drift:      %d to create, %d due date(s), %d points, %d link(s), %d unaccounted"
           % (counts["create"], counts["due"], counts["points"], counts["url"], len(orphans)))
+    if plan is not None:
+        print("# modules:    %d to create, %d to update, %d unaccounted"
+              % (mcounts["module_create"], mcounts["module_update"], mcounts["module_orphan"]))
+        print("# items:      %d to add, %d to update, %d unaccounted, %d suggestion(s)"
+              % (mcounts["item_add"], mcounts["item_update"], mcounts["item_orphan"],
+                 mcounts["item_suggest"]))
     print("#")
-    print("# Nothing about the modules page is diffed here: an assignment being created")
-    print("# carries the day it is due and the day it is handed out, so that applying this")
-    print("# files it where a full deploy would have, but existing module items are never")
-    print("# reordered, re-placed, or removed by anything in this document.")
+    if plan is None:
+        print("# --no-modules: the modules page was not compared. An assignment being created")
+        print("# still carries the day it is due and the day it is handed out, so applying")
+        print("# this files it where a full deploy would have.")
+    else:
+        print("# The modules page is compared with the plan a full deploy writes")
+        print("# (ursinus_canvas.plan_modules): missing modules and items are added with the")
+        print("# deploy's fields, drifted titles, links, and published state are updated in")
+        print("# place. Anything that removes or reorders content is only suggested, commented")
+        print("# out, at the end. An assignment created or re-dated here files its own items.")
     print("# Review before applying; this is a description of drift, not a decision.")
 
     dated = [want["day"] for want in expected.values()
@@ -2270,8 +2729,14 @@ def generate(canvas, markdown_path):
         for line in out:
             print(line)
     else:
-        print("# No assignment drift: Canvas matches the repository.")
+        print("# No drift: Canvas matches the repository.")
         print("changes: []")
+
+    if module_suggested:
+        print("# Modules page suggestions. Uncomment to apply; each removes or reorders")
+        print("# content a deploy would not have, or needs a second pass.")
+        for line in module_suggested:
+            print(line)
 
     if deferred:
         print("# %d assignment(s) already in Canvas have a rubric in the repository."
@@ -2320,15 +2785,28 @@ def check_dependencies(changes):
     creates = {}          # assignment name -> operation number
     disturbs = {}         # assignment name -> operation number, for item-level surgery
     new_modules = []      # operation numbers creating a module
+    created_modules = {}  # module name -> operation number creating it
+
+    def name_of(value):
+        return str(value or "").strip().lower()
 
     def key(change):
-        return str(change.get("name") or "").strip().lower()
+        return name_of(change.get("name"))
 
     for change in changes:
         op, idx, name = change["op"], change["_index"], key(change)
 
         if op == "module.create":
             new_modules.append(idx)
+            created_modules[name] = idx
+
+        if op.startswith("item.") and name_of(change.get("module")) in created_modules:
+            die("operation %d (%s) files into module %r, which operation %d creates in this "
+                "same run. Every operation is resolved before any of them writes, so the "
+                "module does not exist yet when this one is resolved. Apply the module.create "
+                "first, then run the item operations (or --generate again) as a second "
+                "document." % (idx, op, change.get("module"),
+                               created_modules[name_of(change.get("module"))]))
 
         if name:
             if name in creates:
@@ -2439,7 +2917,12 @@ def parse_args(argv):
     p.add_argument("--no-modules", action="store_true",
                    help="do not touch the modules page: skip filing a new assignment under "
                         "its due day, moving it when its due date moves, and removing its "
-                        "items when it is deleted")
+                        "items when it is deleted. Under --generate, compare assignments "
+                        "only and leave the modules page out of the comparison")
+    p.add_argument("--homepage", default=None, metavar="URL",
+                   help="under --generate, the course website a deploy was given with -w, "
+                        "used to build the module item links it compares (default: the "
+                        "syllabus's course_homepage)")
     p.add_argument("--last-class-date", default=None, metavar="YYYY-MM-DD",
                    help="the last day of class, used as the 'available until' date for "
                         "assignments this run creates. Without it the date is read off the "
@@ -2457,7 +2940,8 @@ def main(argv=None):
 
     if args.generate:
         canvas = connect(args)
-        return generate(canvas, args.markdown)
+        return generate(canvas, args.markdown, modules=not args.no_modules,
+                        homepage=args.homepage)
 
     if args.file:
         if not os.path.exists(args.file):

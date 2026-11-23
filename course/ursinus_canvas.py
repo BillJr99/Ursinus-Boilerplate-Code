@@ -1048,6 +1048,190 @@ def create_late_policy(course, inputdict):
     except: # if the late policy already exists, edit it
         course.edit_late_policy(**inputdict)
     
+# ---------------------------------------------------------------------------
+# The modules page, as data.
+#
+# plan_modules() is the one description of which modules a deploy creates, in what order, and
+# which items it files into each. process_markdown() below walks it to write the shell, and
+# ursinus_canvas_inline_changes.py --generate walks the same plan to compare a live shell with
+# the repository, so the two cannot disagree about what the modules page should hold. Change
+# what a deploy files here, not in process_markdown, and --generate follows.
+# ---------------------------------------------------------------------------
+
+# The standing course links a deploy files into the Resources module, in order.
+RESOURCE_LINKS = (
+    ('course_homepage', "Course Homepage"),
+    ('class_notebook', "Access the Class Notebook"),
+    ('teamshelproom', "Access the Class Teams Help Room Channel"),
+    ('chatlink', "Access the Class Group Chat"),
+    ('issspecifictutoring', "ISS Group Tutoring and Individual Tutoring Sign-Up"))
+
+def schedule_link(entry, key, lia_base):
+    """The link a schedule entry carries under key, LiaScript-resolved, or None.
+
+    An absent or empty link, or the literal "false", reads as no link at all."""
+    if key in entry and len(str(entry[key]).strip()) > 0 and str(entry[key]).strip().lower() != "false":
+        return lia_resolve(entry, entry[key], lia_base)
+    return None
+
+def link_module_item(title, link, homepage):
+    """The module item a reading or a handed-out deliverable becomes: a link that opens in a
+    new tab, or a bare subheader when it has no link."""
+    inputdict = {}
+    inputdict['title'] = title
+    if link is None:
+        inputdict['type'] = "SubHeader"
+    else:
+        inputdict['type'] = "ExternalUrl"
+        inputdict['external_url'] = makelink(addslash(homepage), stripnobool(link))
+        inputdict['new_tab'] = True
+    inputdict['published'] = True
+    return inputdict
+
+def session_module_name(item, coursedt):
+    """The module name for one schedule entry: "Wed, Oct 29, 2025 - Recursion", or the
+    entry's reschedule: text in place of the date."""
+    title = item['title'] if 'title' in item else "N/A"
+    coursedtstr = coursedt.strftime('%a, %b %d, %Y')
+    if 'reschedule' in item:
+        coursedtstr = item['reschedule']
+    return coursedtstr + " - " + title
+
+def deliverable_kind(dtitle):
+    """"assignment" for a deliverable that becomes a Canvas assignment, "quiz" for one that
+    names a quiz, and "item" for one that is only a module item (the "Handed Out" rows)."""
+    description = dtitle.strip().lower()
+    if not (' handed out' in description) and not ('quiz:' in description):
+        return "assignment"
+    if 'quiz:' in description:
+        return "quiz"
+    return "item"
+
+def plan_modules(postdict, homepage, lia_base):
+    """Every module a deploy creates and every item it files, without touching Canvas.
+
+    Returns {'modules': [...], 'sessions': [...]}. Each module is a dict with 'name',
+    'position' (1-based, as created), 'published', 'tag' (the standing-module tag, or None for
+    a session's own module), 'date' (the session's date, or None), and 'items': the module
+    items in the order a deploy adds them. Each item is a dict with 'kind' ("resource",
+    "activity", "assignment", "deliverable", or "reading"), 'payload' (the module_item fields a
+    deploy sends; an assignment's content_id is filled in once the assignment exists), and,
+    for an assignment, 'name'.
+
+    'sessions' is the schedule in order, one dict per entry with 'item' (the schedule entry),
+    'date', 'module', and 'steps': the deliverables and readings in the order a deploy acts on
+    them, each naming the module it lands in as 'target'. Quizzes appear as steps but never as
+    module items, because a deploy files none for them.
+    """
+    info = postdict['info']
+    startdate = info['course_start_date']
+    days = info['class_meets_days']
+    isM, isT, isW, isR, isF, isS, isU = (days['isM'], days['isT'], days['isW'], days['isR'],
+                                         days['isF'], days['isS'], days['isU'])
+
+    modules = []
+    sessions = []
+    moduleidx = 1 # module positions are 1-indexed
+
+    # Standing modules for tagged items, positioned above the first class day.
+    # They are only created when something will actually go in them.
+    tagged_modules = {}
+    wants_resources = any(k in info for k in
+        ('course_homepage', 'class_notebook', 'teamshelproom', 'chatlink', 'issspecifictutoring'))
+    wants_overarching = False
+    for scanitem in postdict['schedule']:
+        for entry in list(scanitem.get('deliverables') or []) + list(scanitem.get('readings') or []):
+            tag = get_module_tag(entry)
+            if tag == MODULE_TAG_RESOURCE:
+                wants_resources = True
+            elif tag == MODULE_TAG_OVERARCHING:
+                wants_overarching = True
+
+    for tag, name, wanted in ((MODULE_TAG_RESOURCE, MODULE_NAME_RESOURCE, wants_resources),
+                              (MODULE_TAG_OVERARCHING, MODULE_NAME_OVERARCHING, wants_overarching)):
+        if wanted:
+            module = {'name': name, 'position': moduleidx, 'published': True, 'tag': tag,
+                      'date': None, 'items': []}
+            modules.append(module)
+            tagged_modules[tag] = module
+            moduleidx = moduleidx + 1
+
+    # The standing course links are resources, not first-day business, so they
+    # live in the Resources module rather than being injected into day one.
+    if MODULE_TAG_RESOURCE in tagged_modules:
+        for infokey, itemtitle in RESOURCE_LINKS:
+            if infokey in info:
+                inputdict = {}
+                inputdict['title'] = itemtitle
+                inputdict['type'] = "ExternalUrl"
+                inputdict['external_url'] = info[infokey]
+                inputdict['new_tab'] = True
+                inputdict['published'] = True
+                tagged_modules[MODULE_TAG_RESOURCE]['items'].append(
+                    {'kind': 'resource', 'payload': inputdict})
+
+    for item in postdict['schedule']:
+        title = item['title'] if 'title' in item else "N/A"
+        link = schedule_link(item, 'link', lia_base) or ""
+        coursedt = get_item_date(item, startdate, isM, isT, isW, isR, isF, isS, isU)
+
+        module = {'name': session_module_name(item, coursedt), 'position': moduleidx,
+                  'published': True, 'tag': None, 'date': coursedt, 'items': []}
+        modules.append(module)
+        moduleidx = moduleidx + 1
+        session = {'item': item, 'date': coursedt, 'module': module, 'steps': []}
+        sessions.append(session)
+
+        def place(step, target):
+            step['target'] = target
+            session['steps'].append(step)
+            if step['kind'] != 'quiz':
+                target['items'].append(step)
+
+        # A module entry for the class notes link
+        if link:
+            inputdict = {}
+            inputdict['title'] = "Activity: " + title
+            inputdict['type'] = "ExternalUrl"
+            inputdict['external_url'] = makelink(addslash(homepage), stripnobool(link))
+            inputdict['new_tab'] = True
+            inputdict['published'] = True
+            place({'kind': 'activity', 'payload': inputdict}, module)
+
+        for deliverable in (item.get('deliverables') or []): # the key can be present with no value
+            dtitle = deliverable['dtitle']
+            dlink = schedule_link(deliverable, 'dlink', lia_base)
+            kind = deliverable_kind(dtitle)
+            if kind == "assignment":
+                # The assignment's own module item always lands on its own day; a module: tag
+                # on it moves nothing (see the deliverable branch below for what it does move).
+                name = rchop(dtitle.strip(), " Due")
+                inputdict = {}
+                inputdict['title'] = name
+                inputdict['type'] = 'Assignment'
+                inputdict['published'] = True
+                place({'kind': 'assignment', 'name': name, 'payload': inputdict,
+                       'source': deliverable, 'link': dlink}, module)
+            elif kind == "quiz":
+                place({'kind': 'quiz', 'payload': None, 'source': deliverable,
+                       'link': dlink}, module)
+            else:
+                # A tagged deliverable keeps its assignment, points, and due date;
+                # only the module item moves to the standing module.
+                place({'kind': 'deliverable', 'payload': link_module_item(dtitle, dlink, homepage),
+                       'source': deliverable, 'link': dlink},
+                      tagged_modules.get(get_module_tag(deliverable), module))
+
+        for reading in (item.get('readings') or []): # the key can be present with no value
+            rlink = schedule_link(reading, 'rlink', lia_base)
+            # A tagged reading keeps its place on the syllabus page; only the
+            # Canvas module item moves to the standing module.
+            place({'kind': 'reading', 'payload': link_module_item(reading['rtitle'], rlink, homepage),
+                   'source': reading, 'link': rlink},
+                  tagged_modules.get(get_module_tag(reading), module))
+
+    return {'modules': modules, 'sessions': sessions}
+
 def process_markdown(fname, canvas, course, courseid, homepage):
     f = open(fname, 'r')
     mdcontents = f.read()
@@ -1128,32 +1312,23 @@ def process_markdown(fname, canvas, course, courseid, homepage):
     
     printlog("Writing Lecture Schedule...")
     
-    moduleidx = 1 # module positions are 1-indexed
-    asmtidx = 1 # assignment index position as well
+    asmtidx = 1 # assignment index position
+
+    # Which modules exist, in what order, and what goes in each, is decided by plan_modules;
+    # this function only carries the plan out. created maps a planned module's position to
+    # the Canvas module made for it.
+    plan = plan_modules(postdict, homepage, lia_base)
+    created = {}
 
     # Standing modules for tagged items, positioned above the first class day.
     # They are only created when something will actually go in them.
-    tagged_modules = {}
-    wants_resources = any(k in postdict['info'] for k in
-        ('course_homepage', 'class_notebook', 'teamshelproom', 'chatlink', 'issspecifictutoring'))
-    wants_overarching = False
-    for scanitem in postdict['schedule']:
-        for entry in list(scanitem.get('deliverables') or []) + list(scanitem.get('readings') or []):
-            tag = get_module_tag(entry)
-            if tag == MODULE_TAG_RESOURCE:
-                wants_resources = True
-            elif tag == MODULE_TAG_OVERARCHING:
-                wants_overarching = True
+    standing = [m for m in plan['modules'] if m['tag'] is not None]
+    for planned in standing:
+        inputdict = {}
+        inputdict['name'] = planned['name']
+        inputdict['published'] = planned['published']
+        created[planned['position']] = create_module(course, inputdict, planned['position'])
 
-    for tag, name, wanted in ((MODULE_TAG_RESOURCE, MODULE_NAME_RESOURCE, wants_resources),
-                              (MODULE_TAG_OVERARCHING, MODULE_NAME_OVERARCHING, wants_overarching)):
-        if wanted:
-            inputdict = {}
-            inputdict['name'] = name
-            inputdict['published'] = True
-            tagged_modules[tag] = create_module(course, inputdict, moduleidx)
-            moduleidx = moduleidx + 1
-    
     # Write the lecture schedule as a recurring event
     coursesections = postdict['info'].get('course_sections') or []
 
@@ -1201,273 +1376,205 @@ def process_markdown(fname, canvas, course, courseid, homepage):
 
     # The standing course links are resources, not first-day business, so they
     # live in the Resources module rather than being injected into day one.
-    if MODULE_TAG_RESOURCE in tagged_modules:
-        for infokey, itemtitle in (
-                ('course_homepage', "Course Homepage"),
-                ('class_notebook', "Access the Class Notebook"),
-                ('teamshelproom', "Access the Class Teams Help Room Channel"),
-                ('chatlink', "Access the Class Group Chat"),
-                ('issspecifictutoring', "ISS Group Tutoring and Individual Tutoring Sign-Up")):
-            if infokey in postdict['info']:
-                inputdict = {}
-                inputdict['title'] = itemtitle
-                inputdict['type'] = "ExternalUrl"
-                inputdict['external_url'] = postdict['info'][infokey]
-                inputdict['new_tab'] = True
-                inputdict['published'] = True
-                add_module_item(tagged_modules[MODULE_TAG_RESOURCE], inputdict)
+    for planned in standing:
+        for entry in planned['items']:
+            if entry['kind'] == 'resource':
+                add_module_item(created[planned['position']], dict(entry['payload']))
 
     printlog("Writing Assignments...")
     scheduleitems = 0
-    for item in postdict['schedule']:   
+    for session in plan['sessions']:
+        item = session['item']
         weekidx = item.get('week', 0)
         dayidx = item.get('date', 0)
-        if 'title' in item:
-            title = item['title']
-        else:
-            title = "N/A"
-        # an absent or empty link is fine and reads as no link at all, the same test the
-        # deliverable links below already use
-        if 'link' in item and len(str(item['link']).strip()) > 0 and str(item['link']).strip().lower() != "false":
-            link = lia_resolve(item, item['link'], lia_base)
-        else:
-            link = ""
 
-        coursedt = get_item_date(item, startdate, isM, isT, isW, isR, isF, isS, isU)
+        coursedt = session['date']
         startd = getDateString(coursedt)
-        coursedtstr = coursedt.strftime('%a, %b %d, %Y')
-        if 'reschedule' in item:
-            coursedtstr = item['reschedule']
-        
+
         if 'cdate' in item and str(item['cdate']).strip():
             # a custom-dated session is off the meeting grid, so a day index would lie
             weekdayidx = "(Week " + str(int(weekidx)+1) + ")"
         else:
             weekdayidx = "(Week " + str(int(weekidx)+1) + " Day " + str(int(dayidx)+1) + ")"
-        
+
         # Create a module for this entry
+        planned = session['module']
         inputdict = {}
-        inputdict['name'] = coursedtstr + " - " + title   
-        inputdict['published'] = True
-        module = create_module(course, inputdict, moduleidx)
-        moduleidx = moduleidx + 1 # for positioning
-        
+        inputdict['name'] = planned['name']
+        inputdict['published'] = planned['published']
+        module = create_module(course, inputdict, planned['position'])
+        created[planned['position']] = module
+
         scheduleitems = scheduleitems + 1
-        
-        # Create a Module Entry for Class Notes Link
-        if link:
-            inputdict = {}
-            inputdict['title'] = "Activity: " + title
-            inputdict['type'] = "ExternalUrl"
-            inputdict['external_url'] = makelink(addslash(homepage), stripnobool(link))
-            inputdict['new_tab'] = True
-            inputdict['published'] = True
-            add_module_item(module, inputdict)
+
+        # The class notes link, then the deliverables and readings, in the order planned
+        for step in session['steps']:
+            if step['kind'] not in ('assignment', 'quiz'):
+                # the class notes link, a handed-out deliverable, or a reading: a module
+                # item and nothing else, filed wherever the plan put it
+                add_module_item(created[step['target']['position']], dict(step['payload']))
+                continue
+
+            deliverable = step['source']
+            dtitle = deliverable['dtitle']
+            dlink = step['link']
+
+            if 'points' in deliverable:
+                points = int(deliverable['points'])
+            else:
+                points = 100                    
             
-        if 'deliverables' in item:
-            for deliverable in (item['deliverables'] or []): # the key can be present with no value
-                dtitle = deliverable['dtitle']
-                if 'dlink' in deliverable and len(str(deliverable['dlink']).strip()) > 0 and str(deliverable['dlink']).strip().lower() != "false":
-                    dlink = lia_resolve(deliverable, deliverable['dlink'], lia_base)
-                else:
-                    dlink = None
-                    
-                if 'points' in deliverable:
-                    points = int(deliverable['points'])
-                else:
-                    points = 100                    
+            description = dtitle.strip() 
+
+            # Create an Assignment Shell
+            if step['kind'] == "assignment":
+                description = rchop(description, " Due")
                 
-                description = dtitle.strip() 
+                duedate = getDateString(adddays(coursedt, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
+                
+                # read the submission types once: the key can be present with no value
+                submissiontypes = str(deliverable.get('submission_types') or "").lower()
 
-                # Create an Assignment Shell
-                if (not (' handed out' in description.lower()) and not ('quiz:' in description.lower())):
-                    description = rchop(description, " Due")
-                    
-                    duedate = getDateString(adddays(coursedt, DUE_DATE_OFFSET)) # offset the due date as needed for the due time which is in UTC
-                    
-                    # read the submission types once: the key can be present with no value
-                    submissiontypes = str(deliverable.get('submission_types') or "").lower()
+                submission_types, allowed_extensions = get_submission_spec(submissiontypes)
 
-                    submission_types, allowed_extensions = get_submission_spec(submissiontypes)
-
-                    inputdict = {}
-                    inputdict['name'] = description
-                    inputdict['submission_types'] = submission_types
-                    if not (allowed_extensions is None): # omit the key to accept any file type
-                        inputdict['allowed_extensions'] = allowed_extensions
-                    inputdict['notify_of_update'] = True
-                    inputdict['published'] = True
-                    inputdict['points_possible'] = points
+                inputdict = {}
+                inputdict['name'] = description
+                inputdict['submission_types'] = submission_types
+                if not (allowed_extensions is None): # omit the key to accept any file type
+                    inputdict['allowed_extensions'] = allowed_extensions
+                inputdict['notify_of_update'] = True
+                inputdict['published'] = True
+                inputdict['points_possible'] = points
+                
+                if dlink is None:
+                    inputdict['description'] = description 
+                else:
+                    inputdict['description'] = description + " (<a href=\"" + makelink(addslash(homepage), stripnobool(dlink)) + "\">" + makelink(addslash(homepage), stripnobool(dlink)) + "</a>)"
                     
-                    if dlink is None:
-                        inputdict['description'] = description 
-                    else:
-                        inputdict['description'] = description + " (<a href=\"" + makelink(addslash(homepage), stripnobool(dlink)) + "\">" + makelink(addslash(homepage), stripnobool(dlink)) + "</a>)"
+                inputdict['due_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) 
+                inputdict['lock_at'] = parseDateTimeCanvas(datetime.strptime(enddate.replace('/', '') + get_local_time(enddate), DUE_DATE_FORMAT)) # lock out assignments on the last day of the class
+                inputdict['position'] = asmtidx
+                
+                printlog("Adding Assignment: " + description + " due at: " + str(duedate))
                         
+                assignment = create_assignment(course, inputdict)
+                asmtidx = asmtidx + 1
+                
+                if assignment is None:
+                    # Only reachable under -s, when no assignment by this name is in the shell.
+                    # There is nothing to associate a rubric with or to link from the module,
+                    # so leave this deliverable alone rather than dereferencing None
+                    printlog("Warning: no assignment named " + description + " in Canvas, so its rubric and module item were skipped.")
+                    continue
+                
+                assignmentid = assignment.id
+                
+                # Create a Rubric for this Assignment if Specified
+                if "rubricpath" in deliverable:
+                    inputdict = {}
+                    
+                    rubricpath = deliverable['rubricpath']
+                    printlog("Adding Rubric from " + rubricpath)
+                    rubricf = open(rubricpath, 'r')
+                    rubricmdcontents = rubricf.read()
+                    rubricpost = frontmatter.loads(rubricmdcontents)
+                    rubricpostdict = rubricpost.to_dict()  
+                    if "info" in rubricpostdict and "rubric" in rubricpostdict['info']:
+                        rubric = rubricpostdict['info']['rubric']                        
+                        
+                        inputdict['rubric_association_id'] = assignmentid
+                        
+                        inputdict['rubric'] = {}
+                        inputdict['rubric']['title'] = description + " Rubric"
+                        inputdict['rubric']['points_possible'] = points
+                        inputdict['rubric']['free_form_criterion_comments'] = False
+                        inputdict['rubric']['skip_updating_points_possible'] = False
+                        inputdict['rubric']['read_only'] = False
+                        inputdict['rubric']['reusable'] = True
+                        inputdict['rubric']['criteria'] = {}
+                        
+                        inputdict['rubric_association'] = {}
+                        inputdict['rubric_association']['use_for_grading'] = True
+                        inputdict['rubric_association']['purpose'] = "grading"
+                        inputdict['rubric_association']['association_id'] = assignmentid
+                        inputdict['rubric_association']['association_type'] = "Assignment"
+                        inputdict['rubric_association']['bookmarked'] = True
+                        
+                        criteriaidx = 0
+                        for criteria in rubric:
+                            criteriadict = {}
+                            criteriadict['description'] = criteria['description']
+                            criteriadict['long_description'] = criteria['description']
+                            criteriadict['criterion_use_range'] = True
+                            criteriapoints = (points * float(criteria['weight']) / 100)
+                            criteriadict['points'] = criteriapoints
+                            criteriadict['ratings'] = {}
+                            
+                            ratingdict = {}
+                            ratingdict['description'] = "Pre-Emerging"
+                            ratingdict['long_description'] = criteria['preemerging']
+                            ratingdict['points'] = (criteriapoints * 0.25)
+                            criteriadict['ratings'][0] = ratingdict
+                            
+                            ratingdict = {}
+                            ratingdict['description'] = "Beginning"
+                            ratingdict['long_description'] = criteria['beginning']
+                            ratingdict['points'] = (criteriapoints * 0.50)
+                            criteriadict['ratings'][1] = ratingdict
+                            
+                            ratingdict = {}
+                            ratingdict['description'] = "Progressing"
+                            ratingdict['long_description'] = criteria['progressing']
+                            ratingdict['points'] = (criteriapoints * 0.85)
+                            criteriadict['ratings'][2] = ratingdict
+                            
+                            ratingdict = {}
+                            ratingdict['description'] = "Proficient"
+                            ratingdict['long_description'] = criteria['proficient']
+                            ratingdict['points'] = (criteriapoints * 1.00)                              
+                            criteriadict['ratings'][3] = ratingdict
+                            
+                            inputdict['rubric']['criteria'][criteriaidx] = criteriadict
+                            criteriaidx = criteriaidx + 1
+
+                    create_rubric(course, inputdict)
+                
+                # Create a Module Entry for the Assignment, from the plan
+                inputdict = dict(step['payload'])
+                inputdict['content_id'] = assignmentid
+                add_module_item(created[step['target']['position']], inputdict)
+            else: # a quiz: the plan files no module item for it
+                if 'qtizippath' in deliverable:
+                    # upload the quiz automatically
+                    quiz_path = deliverable['qtizippath']
+                    
+                    print("Uploading Quiz: " + quiz_path)
+                    
+                    create_quiz_content_migration(course, quiz_path)
+                else:
+                    # prompt the user to upload the quiz
+                    input("Import the QTI for this quiz under Settings - Import Course Content on Canvas and press enter to continue: " + description)
+                    
+                quiz_name = lchop(description, "Quiz: ")
+                quiz = find_quiz_by_title(course, quiz_name)
+                if not (quiz is None):
+                    duedate = adddays(coursedt, DUE_DATE_OFFSET) # offset the due date as needed for the due time which is in UTC
+                    opendate = adddays(duedate, -2) # unlock the quiz 2 days before
+                    duedate = getDateString(duedate)
+                    opendate = getDateString(opendate)
+                    
+                    inputdict = {}
+                    inputdict['quiz_type'] = "assignment"
+                    inputdict['unlock_at'] = parseDateTimeCanvas(datetime.strptime(opendate + get_local_time(opendate), DUE_DATE_FORMAT))
                     inputdict['due_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) 
                     inputdict['lock_at'] = parseDateTimeCanvas(datetime.strptime(enddate.replace('/', '') + get_local_time(enddate), DUE_DATE_FORMAT)) # lock out assignments on the last day of the class
-                    inputdict['position'] = asmtidx
-                    
-                    printlog("Adding Assignment: " + description + " due at: " + str(duedate))
-                            
-                    assignment = create_assignment(course, inputdict)
-                    asmtidx = asmtidx + 1
-                    
-                    if assignment is None:
-                        # Only reachable under -s, when no assignment by this name is in the shell.
-                        # There is nothing to associate a rubric with or to link from the module,
-                        # so leave this deliverable alone rather than dereferencing None
-                        printlog("Warning: no assignment named " + description + " in Canvas, so its rubric and module item were skipped.")
-                        continue
-                    
-                    assignmentid = assignment.id
-                    
-                    # Create a Rubric for this Assignment if Specified
-                    if "rubricpath" in deliverable:
-                        inputdict = {}
-                        
-                        rubricpath = deliverable['rubricpath']
-                        printlog("Adding Rubric from " + rubricpath)
-                        rubricf = open(rubricpath, 'r')
-                        rubricmdcontents = rubricf.read()
-                        rubricpost = frontmatter.loads(rubricmdcontents)
-                        rubricpostdict = rubricpost.to_dict()  
-                        if "info" in rubricpostdict and "rubric" in rubricpostdict['info']:
-                            rubric = rubricpostdict['info']['rubric']                        
-                            
-                            inputdict['rubric_association_id'] = assignmentid
-                            
-                            inputdict['rubric'] = {}
-                            inputdict['rubric']['title'] = description + " Rubric"
-                            inputdict['rubric']['points_possible'] = points
-                            inputdict['rubric']['free_form_criterion_comments'] = False
-                            inputdict['rubric']['skip_updating_points_possible'] = False
-                            inputdict['rubric']['read_only'] = False
-                            inputdict['rubric']['reusable'] = True
-                            inputdict['rubric']['criteria'] = {}
-                            
-                            inputdict['rubric_association'] = {}
-                            inputdict['rubric_association']['use_for_grading'] = True
-                            inputdict['rubric_association']['purpose'] = "grading"
-                            inputdict['rubric_association']['association_id'] = assignmentid
-                            inputdict['rubric_association']['association_type'] = "Assignment"
-                            inputdict['rubric_association']['bookmarked'] = True
-                            
-                            criteriaidx = 0
-                            for criteria in rubric:
-                                criteriadict = {}
-                                criteriadict['description'] = criteria['description']
-                                criteriadict['long_description'] = criteria['description']
-                                criteriadict['criterion_use_range'] = True
-                                criteriapoints = (points * float(criteria['weight']) / 100)
-                                criteriadict['points'] = criteriapoints
-                                criteriadict['ratings'] = {}
-                                
-                                ratingdict = {}
-                                ratingdict['description'] = "Pre-Emerging"
-                                ratingdict['long_description'] = criteria['preemerging']
-                                ratingdict['points'] = (criteriapoints * 0.25)
-                                criteriadict['ratings'][0] = ratingdict
-                                
-                                ratingdict = {}
-                                ratingdict['description'] = "Beginning"
-                                ratingdict['long_description'] = criteria['beginning']
-                                ratingdict['points'] = (criteriapoints * 0.50)
-                                criteriadict['ratings'][1] = ratingdict
-                                
-                                ratingdict = {}
-                                ratingdict['description'] = "Progressing"
-                                ratingdict['long_description'] = criteria['progressing']
-                                ratingdict['points'] = (criteriapoints * 0.85)
-                                criteriadict['ratings'][2] = ratingdict
-                                
-                                ratingdict = {}
-                                ratingdict['description'] = "Proficient"
-                                ratingdict['long_description'] = criteria['proficient']
-                                ratingdict['points'] = (criteriapoints * 1.00)                              
-                                criteriadict['ratings'][3] = ratingdict
-                                
-                                inputdict['rubric']['criteria'][criteriaidx] = criteriadict
-                                criteriaidx = criteriaidx + 1
-
-                        create_rubric(course, inputdict)
-                    
-                    # Create a Module Entry for the Assignment
-                    inputdict = {}
-                    inputdict['title'] = description
-                    inputdict['type'] = 'Assignment'
-                    inputdict['content_id'] = assignmentid
+                    inputdict['show_correct_answers'] = True
                     inputdict['published'] = True
-                    add_module_item(module, inputdict)
-                elif ('quiz:' in description.lower()):
-                    if 'qtizippath' in deliverable:
-                        # upload the quiz automatically
-                        quiz_path = deliverable['qtizippath']
-                        
-                        print("Uploading Quiz: " + quiz_path)
-                        
-                        create_quiz_content_migration(course, quiz_path)
-                    else:
-                        # prompt the user to upload the quiz
-                        input("Import the QTI for this quiz under Settings - Import Course Content on Canvas and press enter to continue: " + description)
-                        
-                    quiz_name = lchop(description, "Quiz: ")
-                    quiz = find_quiz_by_title(course, quiz_name)
-                    if not (quiz is None):
-                        duedate = adddays(coursedt, DUE_DATE_OFFSET) # offset the due date as needed for the due time which is in UTC
-                        opendate = adddays(duedate, -2) # unlock the quiz 2 days before
-                        duedate = getDateString(duedate)
-                        opendate = getDateString(opendate)
-                        
-                        inputdict = {}
-                        inputdict['quiz_type'] = "assignment"
-                        inputdict['unlock_at'] = parseDateTimeCanvas(datetime.strptime(opendate + get_local_time(opendate), DUE_DATE_FORMAT))
-                        inputdict['due_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) 
-                        inputdict['lock_at'] = parseDateTimeCanvas(datetime.strptime(enddate.replace('/', '') + get_local_time(enddate), DUE_DATE_FORMAT)) # lock out assignments on the last day of the class
-                        inputdict['show_correct_answers'] = True
-                        inputdict['published'] = True
-                        inputdict['show_correct_answers_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) # show quiz results after the deadline
-                        
-                        quiz = edit_quiz(quiz, inputdict) # we'll move the quiz if needed into the right assignment group with other assignments, once the groups are created 
-                    else:
-                        print("Warning: quiz " + quiz_name + " not found.")
-                else:
-                    # Create a Module Entry for the Deliverable.
-                    # A tagged deliverable keeps its assignment, points, and due date
-                    # above; only the module item moves to the standing module.
-                    inputdict = {}
-                    inputdict['title'] = dtitle
-                    if dlink is None:
-                        inputdict['type'] = "SubHeader"
-                    else:
-                        inputdict['type'] = "ExternalUrl"
-                        inputdict['external_url'] = makelink(addslash(homepage), stripnobool(dlink))
-                        inputdict['new_tab'] = True            
-                    inputdict['published'] = True
-                    add_module_item(tagged_modules.get(get_module_tag(deliverable), module), inputdict)  
+                    inputdict['show_correct_answers_at'] = parseDateTimeCanvas(datetime.strptime(duedate + get_local_time(duedate), DUE_DATE_FORMAT)) # show quiz results after the deadline
                     
-        if 'readings' in item:
-            for reading in (item['readings'] or []): # the key can be present with no value
-                rtitle = reading['rtitle']
-                if 'rlink' in reading and len(str(reading['rlink']).strip()) > 0 and str(reading['rlink']).strip().lower() != "false":
-                    rlink = lia_resolve(reading, reading['rlink'], lia_base)
+                    quiz = edit_quiz(quiz, inputdict) # we'll move the quiz if needed into the right assignment group with other assignments, once the groups are created 
                 else:
-                    rlink = None  
-                
-                # Create a Module Entry for the Reading Activity.
-                # A tagged reading keeps its place on the syllabus page; only the
-                # Canvas module item moves to the standing module.
-                inputdict = {}
-                inputdict['title'] = rtitle
-                inputdict['published'] = True
-                if rlink is None:
-                    inputdict['type'] = "SubHeader"
-                else:
-                    inputdict['type'] = "ExternalUrl"
-                    inputdict['external_url'] = makelink(addslash(homepage), stripnobool(rlink))
-                    inputdict['new_tab'] = True            
-                
-                add_module_item(tagged_modules.get(get_module_tag(reading), module), inputdict) 
+                    print("Warning: quiz " + quiz_name + " not found.")
 
     # https://canvas.instructure.com/doc/api/late_policy.html
     printlog("Writing Late Policy...")
