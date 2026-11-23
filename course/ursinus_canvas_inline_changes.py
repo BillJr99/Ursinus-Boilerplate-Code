@@ -1042,12 +1042,26 @@ class Canvas(object):
         will be published before anything is written. An explicit item.add passes
         publish_module=False unless its operation asks, so that adding a reading to
         a week kept back does not release the week.
+
+        The item's own published state is set separately, because Canvas ignores
+        "published" in the create payload: a new module item starts unpublished.
+        Before publish_module existed, the module.edit below always ran and Canvas,
+        publishing the module, published the new item with it; an item.add into an
+        already published module now has to publish the item itself. So the item is
+        published unless the payload says published: false, and an item asked to stay
+        unpublished is unpublished again if publishing the module published it.
         """
         sleep_for_rate_limit()
         created = module.create_module_item(module_item=payload)
         if publish_module:
             module.edit(module={"published": True})
             module.published = True
+        want = bool(payload.get("published", True))
+        have = getattr(created, "published", None)
+        if (want and have is not True) or (not want and (have is True or publish_module)):
+            sleep_for_rate_limit()
+            created.edit(module_item={"published": want})
+            created.published = want
         self.forget_items(module)
         return created
 
@@ -1668,11 +1682,14 @@ def plan_operation(canvas, change):
             # though the whole operation failed and can simply be re-run.
             if due_module is not None:
                 try:
+                    # The item follows the assignment: publishing an Assignment item
+                    # publishes the assignment, so one created published: false keeps
+                    # an unpublished item.
                     canvas.add_item(due_module, {
                         "title": name,
                         "type": "Assignment",
                         "content_id": created.id,
-                        "published": True,
+                        "published": bool(payload["published"]),
                     })
                     done.append("filed it under %r" % canvas._label(due_module))
                 except Exception as exc:

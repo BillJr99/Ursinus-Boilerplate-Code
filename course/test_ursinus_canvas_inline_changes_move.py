@@ -21,6 +21,8 @@ class FakeModule:
     def create_module_item(self, **kwargs):
         self.events.append(("add", self.id, kwargs))
         created = SimpleNamespace(id=901, **kwargs["module_item"])
+        # Real module items can be edited; add_item uses that to set published state.
+        created.edit = lambda **kw: self.events.append(("item_publish", created.id, kw))
         self.entries.append(created)
         return created
 

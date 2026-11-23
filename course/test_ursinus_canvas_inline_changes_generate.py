@@ -495,6 +495,79 @@ class GenerateModulesTests(unittest.TestCase):
         self.assertIn("and publish module", " ".join(lines))
 
 
+class CanvasLikeModule(FakeModule):
+    """Models what course 22336 showed: create_module_item ignores "published" (a new
+    item starts unpublished), only item.edit sets it, and publishing a module publishes
+    the items in it."""
+
+    def create_module_item(self, module_item):
+        fields = dict(module_item)
+        fields.pop("published", None)
+        item = super().create_module_item(fields)
+        item.published = False
+
+        def edit(module_item):
+            if "published" in module_item:
+                item.published = module_item["published"]
+        item.edit = edit
+        return item
+
+    def edit(self, module):
+        super().edit(module)
+        if module.get("published"):
+            for entry in self.entries:
+                entry.published = True
+
+
+class AddItemPublishTests(unittest.TestCase):
+    def setUp(self):
+        self.canvas = changes.Canvas.__new__(changes.Canvas)
+        self.canvas._items, self.canvas.unfiled = {}, []
+        self.module = CanvasLikeModule("Wed, Aug 26, 2026 - Recursion", published=True)
+        self.canvas._modules = [self.module]
+        sleep = patch.object(changes, "sleep_for_rate_limit")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def add(self, change):
+        change = dict({"op": "item.add", "module": self.module.name, "type": "ExternalUrl",
+                       "url": "https://example.org/r", "_index": 1}, **change)
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, action = changes.plan_operation(self.canvas, change)
+            action()
+        return next(i for i in self.module.entries if i.title == change["title"])
+
+    def test_item_add_into_a_published_module_ends_published(self):
+        self.assertIs(self.add({"title": "Reading", "published": True}).published, True)
+
+    def test_item_add_without_published_ends_published(self):
+        self.assertIs(self.add({"title": "Reading"}).published, True)
+
+    def test_item_add_published_false_stays_unpublished(self):
+        self.assertIs(self.add({"title": "Hidden", "published": False}).published, False)
+        self.assertIs(self.module.published, True)
+
+    def test_filing_that_publishes_the_module_keeps_a_hidden_item_hidden(self):
+        # the assignment.create filing and the item.move fallback both publish the module
+        created = self.canvas.add_item(self.module, {"title": "A", "type": "Assignment",
+                                                     "content_id": 7, "published": False})
+        self.assertIs(created.published, False)
+        created = self.canvas.add_item(self.module, {"title": "B", "type": "SubHeader",
+                                                     "published": True})
+        self.assertIs(created.published, True)
+
+    def test_move_fallback_recreates_the_item_published(self):
+        source = CanvasLikeModule("Source", published=True)
+        old = source.create_module_item({"title": "Moved", "type": "SubHeader"})
+        old.published = True
+        self.canvas._modules.append(source)
+        with contextlib.redirect_stderr(io.StringIO()):
+            moved = self.canvas.move_item(old, source, self.module,
+                                          changes.move_payload(old, "Moved"), keep_id=False)
+        self.assertIs(moved.published, True)
+        self.assertNotIn(old, source.entries)
+
+
 class ItemOpsTests(unittest.TestCase):
     def test_item_ops_into_a_module_created_in_the_same_document_are_refused(self):
         doc = changes.parse_document(
