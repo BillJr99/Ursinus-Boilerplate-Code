@@ -108,7 +108,7 @@ jobs:
           # viz/ becomes the last build plus what changed on the branch since it was built: files
           # changed or added there are kept, files deleted there stay deleted, other files come from
           # the build, and files the build does not have are dropped.
-          import os, shutil, sys
+          import os, shutil, sys, tempfile
           snap, changed = sys.argv[1], sys.argv[2]
           keep = {p for p in open(changed, "rb").read().decode().split("\0") if p}
           def files(top):
@@ -129,10 +129,18 @@ jobs:
                   skipped.append(p)
                   continue
               os.makedirs(os.path.dirname(p), exist_ok=True)
-              # Copy to a temporary name, then rename: a failed write (a full disk) fails the step and never
-              # leaves a truncated file to be published.
-              shutil.copyfile(os.path.join(snap, p), p + ".code-viz-tmp")
-              os.replace(p + ".code-viz-tmp", p)
+              # Copy to a new, unique temporary file, then rename: a failed write (a full disk) fails the
+              # step and never leaves a truncated file to be published, and no kept file is overwritten.
+              fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".code-viz-")
+              os.close(fd)
+              try:
+                  shutil.copyfile(os.path.join(snap, p), tmp)
+                  os.chmod(tmp, 0o644)                 # mkstemp makes it 0600
+                  os.replace(tmp, p)
+              except BaseException:
+                  if os.path.exists(tmp):
+                      os.remove(tmp)
+                  raise
               laid += 1
           print(f"laid {laid} file(s) of the build over viz/, dropped {len(dropped)} it does not have; kept {len(keep)} path(s) changed since it was built"
                 + (f"; skipped {len(skipped)} that clash with kept files: {' '.join(skipped[:10])}" if skipped else ""))
