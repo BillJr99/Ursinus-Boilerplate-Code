@@ -5,6 +5,18 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import os
+import sys
+
+# These tests live in course/inline_changes/ beside the tool; the Canvas modules it uses
+# (ursinus_canvas.py and friends) stay in course/, this folder's parent.
+# This folder goes first, so the tool imports from here rather than the entry point in course/.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (os.path.dirname(_HERE), _HERE):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+
 import ursinus_canvas_inline_changes as changes
 
 

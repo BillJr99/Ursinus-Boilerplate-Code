@@ -1053,8 +1053,9 @@ def create_late_policy(course, inputdict):
 #
 # plan_modules() is the one description of which modules a deploy creates, in what order, and
 # which items it files into each. process_markdown() below walks it to write the shell, and
-# ursinus_canvas_inline_changes.py --generate walks the same plan to compare a live shell with
-# the repository, so the two cannot disagree about what the modules page should hold. Change
+# inline_changes/ursinus_canvas_inline_changes.py --generate walks the same plan to compare a
+# live shell with the repository, so the two cannot disagree about what the modules page should
+# hold. Change
 # what a deploy files here, not in process_markdown, and --generate follows.
 # ---------------------------------------------------------------------------
 
