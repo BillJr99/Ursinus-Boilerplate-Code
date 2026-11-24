@@ -3,9 +3,8 @@
 ursinus_canvas_inline_changes.py -- apply a small, explicit set of edits to a live
 Canvas shell, described inline on stdin.
 
-This lives in course/inline_changes/ with its tests. The old path,
-course/ursinus_canvas_inline_changes.py, is a thin entry point that runs this file
-with the same options, output and exit codes, so commands that name it still work.
+This lives in course/ursinus_inline_changes/ with its tests (moved from course/ on
+2026-11-24); the Canvas modules it uses stay in course/.
 
 Why this exists
 ---------------
@@ -47,9 +46,9 @@ item.update (or module.update); anything unaccounted for, unpublished, retyped, 
 out of order is only suggested, commented out. --no-modules restricts the
 comparison to assignments. Nothing is written to Canvas in this mode.
 
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py --generate -c 12345 > changes.yaml
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py --generate -c 12345 \
-        | python code/course/inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py --generate -c 12345 > changes.yaml
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py --generate -c 12345 \
+        | python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply
 
 Without --generate the script *applies* a change document, which it reads from
 stdin unless --file names one.
@@ -194,16 +193,16 @@ them into two runs.
 Usage
 -----
     # dry run: resolve every operation against the live shell and print the plan
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py -c 12345 < changes.yaml
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py -c 12345 < changes.yaml
 
     # same, reading the document from a file
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py -c 12345 -f changes.yaml
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py -c 12345 -f changes.yaml
 
     # commit it
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply < changes.yaml
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply < changes.yaml
 
     # here-document, for a couple of edits you do not want to keep
-    python code/course/inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply <<'EOF'
+    python code/course/ursinus_inline_changes/ursinus_canvas_inline_changes.py -c 12345 --apply <<'EOF'
     changes:
       - op: assignment.due
         name: "Project: Final Project Proposal"
