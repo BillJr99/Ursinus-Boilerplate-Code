@@ -57,13 +57,12 @@
         if any(os.path.isfile(os.sep.join(parts[:i])) for i in range(1, len(parts))) or os.path.isdir(p):
             skipped.append(p)
             continue
-        try:
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            shutil.copyfile(os.path.join(snap, p), p)
-            laid += 1
-        except OSError as e:
-            skipped.append(p)
-            print(f"::warning::could not lay {p}: {e}")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        # Copy to a temporary name, then rename: a failed write (a full disk) fails the step and never
+        # leaves a truncated file to be published.
+        shutil.copyfile(os.path.join(snap, p), p + ".code-viz-tmp")
+        os.replace(p + ".code-viz-tmp", p)
+        laid += 1
     print(f"laid {laid} file(s) of the build over viz/, dropped {len(dropped)} it does not have; kept {len(keep)} path(s) changed since it was built"
           + (f"; skipped {len(skipped)} that clash with kept files: {' '.join(skipped[:10])}" if skipped else ""))
     PYTHON
