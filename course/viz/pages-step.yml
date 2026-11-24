@@ -1,0 +1,41 @@
+# code-viz: the "Add the code-viz build" step for a course repo's .github/workflows/build-pages.yml.
+# Paste it right after the "Checkout code" step. Full manual: course/viz/code-viz, section 16 CI.
+# The shared code-viz workflow publishes to the code-viz-build branch only when build-pages.yml
+# names that branch, so adding this step is what switches a course over.
+# code-viz CI keeps its build on the code-viz-build branch, never on gh-pages, so a semester
+# repo and its parent never merge generated, site-specific files. Lay that build over viz/,
+# except the viz/ paths changed on gh-pages since the commit it was built from (code-viz
+# manual, section 16 CI). No branch yet: viz/ is published as committed.
+- name: Add the code-viz build
+  run: |
+    B=code-viz-build
+    if ! git ls-remote --exit-code --heads origin "$B" >/dev/null; then
+      echo "no $B branch; publishing viz/ as committed"
+      exit 0
+    fi
+    git fetch -q --depth=1 origin "+refs/heads/$B:refs/remotes/origin/$B"
+    BASE=$(git log -1 --format=%B "origin/$B" | sed -n 's/^Built-from: \([0-9a-f]\{40\}\)$/\1/p' | head -n 1)
+    : > "$RUNNER_TEMP/changed-since-build"
+    if [ -n "$BASE" ] && git fetch -q --depth=1 origin "$BASE" 2>/dev/null; then
+      git diff --no-renames --name-only -z "$BASE" HEAD -- viz > "$RUNNER_TEMP/changed-since-build"
+    else
+      echo "::warning::could not read the commit the code-viz build came from; laying all of it over viz/"
+    fi
+    mkdir -p "$RUNNER_TEMP/code-viz-build"
+    git archive "origin/$B" viz | tar -x -C "$RUNNER_TEMP/code-viz-build"
+    python3 - "$RUNNER_TEMP/code-viz-build" "$RUNNER_TEMP/changed-since-build" <<'PYTHON'
+    import os, shutil, sys
+    snap, changed = sys.argv[1], sys.argv[2]
+    keep = {p for p in open(changed, "rb").read().decode().split("\0") if p}
+    laid = 0
+    for top, _, files in os.walk(os.path.join(snap, "viz")):
+        for name in files:
+            rel = os.path.relpath(os.path.join(top, name), snap)
+            if rel in keep:
+                continue
+            os.makedirs(os.path.dirname(rel), exist_ok=True)
+            shutil.copyfile(os.path.join(top, name), rel)
+            laid += 1
+    print(f"laid {laid} file(s) of the code-viz build over viz/; kept {len(keep)} path(s) changed on gh-pages since")
+    PYTHON
+    echo "code-viz build: $(git log -1 --format='%h %s' "origin/$B")"

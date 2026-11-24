@@ -1,4 +1,4 @@
-# code-viz: build every labeled example and commit the course's viz/ folder (shared workflow).
+# code-viz: build every labeled example and publish the course's viz/ folder (shared workflow).
 #
 # Course repos call this from their own .github/workflows/code-viz.yml (template:
 # course/viz/workflow.yml). Full manual: course/viz/code-viz, section 16 CI.
@@ -11,12 +11,23 @@
 #      outside the repo (runner temp).
 #   3. Runs `code-viz build --check` with the runner's own Docker: every labeled example and
 #      viz/manifest.json entry, except recorded agent examples (Ollama), whose committed
-#      recordings are kept. It fails, and commits nothing, when an example stopped running.
-#   4. Refuses to commit when anything outside viz/ changed, so pages, syllabi, decks and the other
+#      recordings are kept. It fails, and publishes nothing, when an example stopped running.
+#   4. Refuses to publish when anything outside viz/ changed, so pages, syllabi, decks and the other
 #      submodules are never touched.
-#   5. Commits viz/ as github-actions[bot] ("[skip ci]") when it changed, fetching and rebasing onto
-#      the branch first (five tries with growing randomized waits, backing out a failed rebase), then starts "Deploy GitHub Pages" (build-pages.yml), because a push made
-#      with the workflow token starts no other workflow.
+#   5. Publishes viz/ and starts "Deploy GitHub Pages" (build-pages.yml), because a push made with
+#      the workflow token starts no other workflow. Where it publishes depends on the course repo:
+#      - Build branch (when the repo's build-pages.yml has the "Add the code-viz build" step, which
+#        names the code-viz-build branch): viz/ goes to the repo's own code-viz-build branch as one
+#        commit whose message ends "Built-from: <gh-pages commit>", and gh-pages is never written.
+#        Generated files are site specific (viz/index.json holds the site address), so keeping them
+#        off gh-pages is what lets a semester repo and its parent merge without generated
+#        conflicts. Before building, the last build is laid over viz/, except the viz/ paths that
+#        changed on gh-pages since the commit it was built from (hand edits, recordings and
+#        deletions win), so unchanged traces stay byte for byte and a build with no real change
+#        publishes nothing. Pushes retry five times; a run never replaces a build of a newer commit.
+#      - Commit (older repos without that step): commits viz/ to the branch as github-actions[bot]
+#        ("[skip ci]"), fetching and rebasing first (five tries with growing randomized waits,
+#        backing out a failed rebase).
 name: code-viz build
 
 on:
@@ -29,6 +40,8 @@ jobs:
     permissions:
       contents: write
       actions: write
+    env:
+      BUILD_BRANCH: code-viz-build
     steps:
       - name: Check out the course branch (no submodules)
         uses: actions/checkout@v4
@@ -46,6 +59,18 @@ jobs:
             echo "No code-viz examples in this repo and no viz/ site; nothing to do."
           fi
 
+      - name: Where does the build go?
+        id: mode
+        if: steps.any.outputs.go == '1'
+        run: |
+          if grep -qs "$BUILD_BRANCH" .github/workflows/build-pages.yml; then
+            echo "mode=branch" >> "$GITHUB_OUTPUT"
+            echo "build-pages.yml lays $BUILD_BRANCH over viz/: publishing to $BUILD_BRANCH, not to $GITHUB_REF_NAME"
+          else
+            echo "mode=commit" >> "$GITHUB_OUTPUT"
+            echo "build-pages.yml has no code-viz build step: committing viz/ to $GITHUB_REF_NAME"
+          fi
+
       - name: Get code-viz
         if: steps.any.outputs.go == '1'
         run: |
@@ -60,6 +85,41 @@ jobs:
           fi
           echo "code-viz at $(git -C "$RUNNER_TEMP/cv" log --oneline -1)"
 
+      - name: Start from the last build
+        if: steps.mode.outputs.mode == 'branch'
+        run: |
+          if ! git ls-remote --exit-code --heads origin "$BUILD_BRANCH" >/dev/null; then
+            echo "no $BUILD_BRANCH branch yet; building from viz/ as committed"
+            exit 0
+          fi
+          git fetch -q origin "+refs/heads/$BUILD_BRANCH:refs/remotes/origin/$BUILD_BRANCH"
+          BUILD="refs/remotes/origin/$BUILD_BRANCH"
+          BASE=$(git log -1 --format=%B "$BUILD" | sed -n 's/^Built-from: \([0-9a-f]\{40\}\)$/\1/p' | head -n 1)
+          if [ -z "$BASE" ] || ! git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null; then
+            echo "the last build's source commit (${BASE:-none}) is not in $GITHUB_REF_NAME; building from viz/ as committed"
+            exit 0
+          fi
+          SNAP="$RUNNER_TEMP/last-build"
+          mkdir -p "$SNAP"
+          git archive "$BUILD" viz | tar -x -C "$SNAP"
+          git diff --no-renames --name-only -z "$BASE" HEAD -- viz > "$RUNNER_TEMP/changed-since-build"
+          python3 - "$SNAP" "$RUNNER_TEMP/changed-since-build" <<'PYTHON'
+          # Copy the last build over viz/, except paths changed (or deleted) on the branch since then.
+          import os, shutil, sys
+          snap, changed = sys.argv[1], sys.argv[2]
+          keep = {p for p in open(changed, "rb").read().decode().split("\0") if p}
+          laid = 0
+          for top, _, files in os.walk(os.path.join(snap, "viz")):
+              for name in files:
+                  rel = os.path.relpath(os.path.join(top, name), snap)
+                  if rel in keep:
+                      continue
+                  os.makedirs(os.path.dirname(rel), exist_ok=True)
+                  shutil.copyfile(os.path.join(top, name), rel)
+                  laid += 1
+          print(f"laid {laid} file(s) of the last build over viz/; kept {len(keep)} path(s) changed on the branch since")
+          PYTHON
+
       - name: Build the examples
         if: steps.any.outputs.go == '1'
         run: python3 "$RUNNER_TEMP/cv/course/viz/code-viz" build --check
@@ -69,14 +129,55 @@ jobs:
         run: |
           OUTSIDE=$(git status --porcelain --untracked-files=all | grep -v -E '^.. viz/' || true)
           if [ -n "$OUTSIDE" ]; then
-            echo "::error::code-viz changed files outside viz/; nothing was committed"
+            echo "::error::code-viz changed files outside viz/; nothing was published"
             echo "$OUTSIDE"
             exit 1
           fi
 
+      - name: Publish viz/ to the build branch
+        id: branch
+        if: steps.mode.outputs.mode == 'branch'
+        shell: bash   # the retry waits use $RANDOM
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          SHA=$(git rev-parse HEAD)
+          BUILD="refs/remotes/origin/$BUILD_BRANCH"
+          # The build branch holds only viz/: stage it in an index of its own, leaving gh-pages alone.
+          TREE=$(GIT_INDEX_FILE="$RUNNER_TEMP/build.index" sh -c 'git read-tree --empty && git add -A viz && git write-tree')
+          built_from() { git log -1 --format=%B "$1" | sed -n 's/^Built-from: \([0-9a-f]\{40\}\)$/\1/p' | head -n 1; }
+          for try in 1 2 3 4 5; do
+            PARENT=$(git rev-parse -q --verify "$BUILD^{commit}" || true)
+            if [ -n "$PARENT" ]; then
+              if [ "$(git rev-parse "$PARENT^{tree}")" = "$TREE" ]; then
+                echo "$BUILD_BRANCH already has this viz/"
+                exit 0
+              fi
+              LAST=$(built_from "$PARENT")
+              if [ -n "$LAST" ] && [ "$LAST" != "$SHA" ] && git merge-base --is-ancestor "$SHA" "$LAST" 2>/dev/null; then
+                echo "$BUILD_BRANCH already has a build of a newer commit ($LAST); not replacing it"
+                exit 0
+              fi
+            fi
+            COMMIT=$(git commit-tree "$TREE" ${PARENT:+-p "$PARENT"} \
+              -m "code-viz: build of $GITHUB_REF_NAME ${SHA:0:7}" -m "Built-from: $SHA")
+            if git push -q origin "$COMMIT:refs/heads/$BUILD_BRANCH"; then
+              echo "published $(git log --oneline -1 "$COMMIT") to $BUILD_BRANCH"
+              echo "pushed=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$try" -lt 5 ] && sleep $(( (5 << try) + RANDOM % (5 << try) ))
+            git fetch -q origin "+refs/heads/$BUILD_BRANCH:$BUILD" || true
+          done
+          echo "::error::could not push $BUILD_BRANCH after five tries"
+          exit 1
+
       - name: Commit viz/
         id: commit
-        if: steps.any.outputs.go == '1'
+        if: steps.mode.outputs.mode == 'commit'
         shell: bash   # the retry waits use $RANDOM
         run: |
           git add -A viz
@@ -103,7 +204,7 @@ jobs:
           exit 1
 
       - name: Publish the site
-        if: steps.commit.outputs.pushed == '1'
+        if: steps.commit.outputs.pushed == '1' || steps.branch.outputs.pushed == '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

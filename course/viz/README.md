@@ -52,6 +52,7 @@ course/viz/
                   MIPS and JavaScript)
   screenshot.py   headless-browser screenshots and render checks of a built viewer
   workflow.yml    the GitHub Actions template for course repos ("code-viz check")
+  pages-step.yml  the "Add the code-viz build" step for a course's build-pages.yml (section 16)
   README.md       generated from this header by `code-viz readme --write`
 ```
 
@@ -760,7 +761,19 @@ Environment variables:
 
 ## 16. CI
 
-CI builds `viz/` and commits it, so nobody has to run `build` by hand after a deck edit.
+CI builds `viz/` and publishes it, so nobody has to run `build` by hand after a deck edit. In a
+course repo whose `build-pages.yml` has the "Add the code-viz build" step (every course since
+2026-11-24), CI keeps its build on the repo's own `code-viz-build` branch and never writes `gh-pages`;
+the Pages deploy lays that build over `viz/`. Older repos without the step still get `viz/`
+committed to `gh-pages`.
+
+**Why a build branch.** Built files are site specific: `viz/index.json` holds the site address and
+build time, and volatile traces differ from run to run. When a semester repo and its parent both
+committed their own builds to `gh-pages`, every child-to-parent sync merged two different versions
+of the same generated files and checkouts stopped on merge conflicts (CS374 and CS357 Fall 2026,
+2026-11-24), and the bot's pushes raced with people's pushes. On the build branch nothing generated
+is ever merged: `gh-pages` `viz/` changes only by hand (a local build you commit, a recording,
+`viz/manifest.json`), and the merge of a one-sided change is clean.
 
 **Files.** The steps live in one shared workflow, `.github/workflows/code-viz.yml` in
 Ursinus-Boilerplate-Code. Each course repo carries a short caller, `.github/workflows/code-viz.yml`
@@ -790,10 +803,25 @@ workflow token starts no other workflow; it only does so when the repo has `code
    (expected outputs are only rewritten by `build --update-expected`, run by hand).
 4. Refuses to commit, and fails, when anything outside `viz/` changed, so pages, syllabi, decks,
    `files/` and the other submodules are never touched by CI.
-5. When `viz/` changed, commits it as `github-actions[bot]` ("code-viz: rebuild viz/ [skip ci]"),
-   fetches and rebases onto the branch (five tries with growing, randomized waits of about 10 to
-   160 s, backing out a failed rebase each time, for pushes that land meanwhile), pushes, and starts
-   "Deploy GitHub Pages" (`build-pages.yml`) by hand, since the bot's push starts no workflow.
+5. Publishes `viz/`, then starts "Deploy GitHub Pages" (`build-pages.yml`) by hand, since a push
+   made with the workflow token starts no workflow.
+   - *Build branch* (the repo's `build-pages.yml` names `code-viz-build`): before building, the last
+     build is laid over `viz/`, except the `viz/` paths that changed on `gh-pages` since the commit
+     it was built from (hand edits, recordings and deletions win), so unchanged traces stay byte for
+     byte and settle compares against what is published. After the build, `viz/` alone is committed
+     to `code-viz-build` as `github-actions[bot]` with the message ending `Built-from: <gh-pages
+     commit>`, only when it differs from the branch tip. Pushes retry five times on top of whatever
+     landed meanwhile, and a run never replaces a build of a newer commit.
+   - *Commit* (older repos): when `viz/` changed, commits it as `github-actions[bot]` ("code-viz:
+     rebuild viz/ [skip ci]"), fetches and rebases onto the branch (five tries with growing,
+     randomized waits of about 10 to 160 s, backing out a failed rebase each time), and pushes.
+
+**The Pages step.** `build-pages.yml` runs "Add the code-viz build" after the checkout: it fetches
+`code-viz-build`, reads its `Built-from` commit, and copies the build over `viz/` except the paths
+changed on `gh-pages` since that commit, so a hand edit is published at once and a failed build
+never hides one. With no branch yet it publishes `viz/` as committed. The `viz/` files already on
+`gh-pages` from before the switch stay: CI starts from them, and the site serves the build over them.
+The step is in `course/viz/pages-step.yml`.
 
 Because traces are written deterministically and unchanged traces are not rewritten, a run with no
 real change commits nothing. What CI does not do: label blocks, add links (`code-viz links`), record
@@ -804,12 +832,17 @@ If the merge reports generated code-viz conflicts, run `bash path/to/resolve-chi
 from the parent checkout. It stages the incoming child's version of each conflicted
 generated path. Source conflicts, including `viz/manifest.json` and `viz/notebooks.json`,
 still need manual resolution. When you push the completed merge, CI rebuilds the
-parent's viz output even if the merge changed only generated files.
+parent's viz output even if the merge changed only generated files. With the build branch, the
+only generated files left on `gh-pages` are the ones committed before the switch; once a sync has
+made the parent's copies the child's, nothing changes them on either side, so later syncs do not
+conflict on them.
 
 **Adding it to a course repo.** Copy `course/viz/workflow.yml` to `.github/workflows/code-viz.yml`,
 and add the last step of `update-submodules.yml` (the "Rebuild code-viz pages when the code
 submodule moved" step, with `id: autocommit` on the commit step and `actions: write` in its
-permissions). Both are safe in a repo with no examples. The added step, as it is in every course:
+permissions), and paste `course/viz/pages-step.yml` into `build-pages.yml` right after its
+"Checkout code" step. All three are safe in a repo with no examples. The update-submodules step,
+as it is in every course:
 
 ```yaml
       - name: Rebuild code-viz pages when the code submodule moved

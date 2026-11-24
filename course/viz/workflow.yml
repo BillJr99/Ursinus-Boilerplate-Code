@@ -5,7 +5,9 @@
 # Runs on a push to gh-pages that changes the site config, pages, files, codeviz/ or viz/.
 # Including viz/ rebuilds the destination when a course sync changes only generated files.
 # You can also run it from Actions or from update-submodules.yml when the code submodule moves.
-# The workflow commits only viz/. Its bot push does not start another code-viz run.
+# The workflow publishes only viz/: to the code-viz-build branch when build-pages.yml has the
+# "Add the code-viz build" step (course/viz/pages-step.yml), else to gh-pages. Its bot push does
+# not start another code-viz run.
 name: code-viz
 
 on:
