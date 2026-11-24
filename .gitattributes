@@ -1,0 +1,4 @@
+# Windows scripts keep CRLF line endings in working copies (Bill, 2026-11-23): cmd.exe can misbehave
+# with LF-only batch files, and a Windows save otherwise shows every line as changed.
+*.bat text eol=crlf
+*.cmd text eol=crlf
