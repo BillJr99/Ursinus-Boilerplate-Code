@@ -21,10 +21,11 @@
 #        commit whose message ends "Built-from: <gh-pages commit>", and gh-pages is never written.
 #        Generated files are site specific (viz/index.json holds the site address), so keeping them
 #        off gh-pages is what lets a semester repo and its parent merge without generated
-#        conflicts. Before building, the last build is laid over viz/, except the viz/ paths that
-#        changed on gh-pages since the commit it was built from (hand edits, recordings and
-#        deletions win), so unchanged traces stay byte for byte and a build with no real change
-#        publishes nothing. Pushes retry five times; a run never replaces a build of a newer commit.
+#        conflicts. Before building, viz/ becomes the last build plus the viz/ changes made on
+#        gh-pages since the commit it was built from (hand edits, recordings and deletions win),
+#        so unchanged traces stay byte for byte and a build with no real change
+#        publishes nothing (a rerun or a run by hand still deploys). Pushes retry five times; a run
+#        never replaces a build of a newer commit.
 #      - Commit (older repos without that step): commits viz/ to the branch as github-actions[bot]
 #        ("[skip ci]"), fetching and rebasing first (five tries with growing randomized waits,
 #        backing out a failed rebase).
@@ -104,20 +105,24 @@ jobs:
           git archive "$BUILD" viz | tar -x -C "$SNAP"
           git diff --no-renames --name-only -z "$BASE" HEAD -- viz > "$RUNNER_TEMP/changed-since-build"
           python3 - "$SNAP" "$RUNNER_TEMP/changed-since-build" <<'PYTHON'
-          # Copy the last build over viz/, except paths changed (or deleted) on the branch since then.
+          # viz/ becomes the last build plus what changed on the branch since it was built: files
+          # changed or added there are kept, files deleted there stay deleted, other files come from
+          # the build, and files the build does not have are dropped.
           import os, shutil, sys
           snap, changed = sys.argv[1], sys.argv[2]
           keep = {p for p in open(changed, "rb").read().decode().split("\0") if p}
+          def files(top):
+              return {os.path.relpath(os.path.join(d, n), top) for d, _, ns in os.walk(os.path.join(top, "viz")) for n in ns}
+          built = files(snap)
+          dropped = [p for p in files(".") - built if p not in keep]
+          for p in dropped:
+              os.remove(p)
           laid = 0
-          for top, _, files in os.walk(os.path.join(snap, "viz")):
-              for name in files:
-                  rel = os.path.relpath(os.path.join(top, name), snap)
-                  if rel in keep:
-                      continue
-                  os.makedirs(os.path.dirname(rel), exist_ok=True)
-                  shutil.copyfile(os.path.join(top, name), rel)
-                  laid += 1
-          print(f"laid {laid} file(s) of the last build over viz/; kept {len(keep)} path(s) changed on the branch since")
+          for p in built - keep:
+              os.makedirs(os.path.dirname(p), exist_ok=True)
+              shutil.copyfile(os.path.join(snap, p), p)
+              laid += 1
+          print(f"laid {laid} file(s) of the last build over viz/, dropped {len(dropped)} it does not have; kept {len(keep)} path(s) changed on the branch since")
           PYTHON
 
       - name: Build the examples
@@ -154,6 +159,10 @@ jobs:
             if [ -n "$PARENT" ]; then
               if [ "$(git rev-parse "$PARENT^{tree}")" = "$TREE" ]; then
                 echo "$BUILD_BRANCH already has this viz/"
+                # A rerun or a run by hand may follow a deploy that never started: deploy again.
+                if [ "$GITHUB_RUN_ATTEMPT" != 1 ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+                  echo "pushed=1" >> "$GITHUB_OUTPUT"
+                fi
                 exit 0
               fi
               LAST=$(built_from "$PARENT")
@@ -208,5 +217,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run build-pages.yml --ref "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
-            || echo "::warning::could not start Deploy GitHub Pages; run it by hand"
+          if ! gh workflow run build-pages.yml --ref "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY"; then
+            # Fail, so a rerun of this job (which finds the build already published) deploys it.
+            echo "::error::could not start Deploy GitHub Pages; rerun this job or run Deploy GitHub Pages by hand"
+            exit 1
+          fi

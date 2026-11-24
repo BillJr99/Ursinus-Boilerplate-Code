@@ -3,10 +3,13 @@
 # The shared code-viz workflow publishes to the code-viz-build branch only when build-pages.yml
 # names that branch, so adding this step is what switches a course over.
 # code-viz CI keeps its build on the code-viz-build branch, never on gh-pages, so a semester
-# repo and its parent never merge generated, site-specific files. Lay that build over viz/,
-# except the viz/ paths changed on gh-pages since the commit it was built from (code-viz
-# manual, section 16 CI). No branch yet: viz/ is published as committed.
+# repo and its parent never merge generated, site-specific files. Publish viz/ as that build
+# plus the viz/ changes made on gh-pages since the commit it was built from (code-viz manual,
+# section 16 CI). With no branch yet, or a build that is not of this commit or an ancestor
+# of it, viz/ is published as committed until the next code-viz run deploys.
 - name: Add the code-viz build
+  env:
+    GH_TOKEN: ${{ github.token }}
   run: |
     B=code-viz-build
     if ! git ls-remote --exit-code --heads origin "$B" >/dev/null; then
@@ -15,27 +18,39 @@
     fi
     git fetch -q --depth=1 origin "+refs/heads/$B:refs/remotes/origin/$B"
     BASE=$(git log -1 --format=%B "origin/$B" | sed -n 's/^Built-from: \([0-9a-f]\{40\}\)$/\1/p' | head -n 1)
-    : > "$RUNNER_TEMP/changed-since-build"
-    if [ -n "$BASE" ] && git fetch -q --depth=1 origin "$BASE" 2>/dev/null; then
-      git diff --no-renames --name-only -z "$BASE" HEAD -- viz > "$RUNNER_TEMP/changed-since-build"
-    else
-      echo "::warning::could not read the commit the code-viz build came from; laying all of it over viz/"
+    HEAD_SHA=$(git rev-parse HEAD)
+    REL=""
+    [ -n "$BASE" ] && REL=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD_SHA" -q .status 2>/dev/null || true)
+    case "$REL" in
+      identical|ahead) ;;
+      *) echo "::warning::the code-viz build (from ${BASE:-an unknown commit}, ${REL:-not comparable}) is not of this commit or an ancestor; publishing viz/ as committed"
+         exit 0 ;;
+    esac
+    if ! git fetch -q --depth=1 origin "$BASE"; then
+      echo "::warning::could not fetch $BASE, the commit the code-viz build came from; publishing viz/ as committed"
+      exit 0
     fi
+    git diff --no-renames --name-only -z "$BASE" HEAD -- viz > "$RUNNER_TEMP/changed-since-build"
     mkdir -p "$RUNNER_TEMP/code-viz-build"
     git archive "origin/$B" viz | tar -x -C "$RUNNER_TEMP/code-viz-build"
     python3 - "$RUNNER_TEMP/code-viz-build" "$RUNNER_TEMP/changed-since-build" <<'PYTHON'
+    # viz/ becomes the build plus what changed on gh-pages since it was built: files changed or
+    # added there are kept, files deleted there stay deleted, other files come from the build,
+    # and files the build does not have are dropped.
     import os, shutil, sys
     snap, changed = sys.argv[1], sys.argv[2]
     keep = {p for p in open(changed, "rb").read().decode().split("\0") if p}
+    def files(top):
+        return {os.path.relpath(os.path.join(d, n), top) for d, _, ns in os.walk(os.path.join(top, "viz")) for n in ns}
+    built = files(snap)
+    dropped = [p for p in files(".") - built if p not in keep]
+    for p in dropped:
+        os.remove(p)
     laid = 0
-    for top, _, files in os.walk(os.path.join(snap, "viz")):
-        for name in files:
-            rel = os.path.relpath(os.path.join(top, name), snap)
-            if rel in keep:
-                continue
-            os.makedirs(os.path.dirname(rel), exist_ok=True)
-            shutil.copyfile(os.path.join(top, name), rel)
-            laid += 1
-    print(f"laid {laid} file(s) of the code-viz build over viz/; kept {len(keep)} path(s) changed on gh-pages since")
+    for p in built - keep:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        shutil.copyfile(os.path.join(snap, p), p)
+        laid += 1
+    print(f"laid {laid} file(s) of the code-viz build over viz/, dropped {len(dropped)} it does not have; kept {len(keep)} path(s) changed on gh-pages since")
     PYTHON
     echo "code-viz build: $(git log -1 --format='%h %s' "origin/$B")"

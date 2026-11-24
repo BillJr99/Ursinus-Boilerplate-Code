@@ -804,21 +804,25 @@ workflow token starts no other workflow; it only does so when the repo has `code
    `files/` and the other submodules are never touched by CI.
 5. Publishes `viz/`, then starts "Deploy GitHub Pages" (`build-pages.yml`) by hand, since a push
    made with the workflow token starts no workflow.
-   - *Build branch* (the repo's `build-pages.yml` names `code-viz-build`): before building, the last
-     build is laid over `viz/`, except the `viz/` paths that changed on `gh-pages` since the commit
-     it was built from (hand edits, recordings and deletions win), so unchanged traces stay byte for
-     byte and settle compares against what is published. After the build, `viz/` alone is committed
+   - *Build branch* (the repo's `build-pages.yml` names `code-viz-build`): before building, `viz/`
+     becomes the last build plus the `viz/` changes made on `gh-pages` since the commit it was built
+     from (hand edits, recordings and deletions win; files the build does not have are dropped), so
+     unchanged traces stay byte for byte and settle compares against what is published. After the build, `viz/` alone is committed
      to `code-viz-build` as `github-actions[bot]` with the message ending `Built-from: <gh-pages
      commit>`, only when it differs from the branch tip. Pushes retry five times on top of whatever
-     landed meanwhile, and a run never replaces a build of a newer commit.
+     landed meanwhile, and a run never replaces a build of a newer commit. A rerun or a run by hand
+     deploys even when the build is unchanged, and a deploy that could not be started fails the
+     job, so rerunning it repairs a missed deploy.
    - *Commit* (older repos): when `viz/` changed, commits it as `github-actions[bot]` ("code-viz:
      rebuild viz/ [skip ci]"), fetches and rebases onto the branch (five tries with growing,
      randomized waits of about 10 to 160 s, backing out a failed rebase each time), and pushes.
 
 **The Pages step.** `build-pages.yml` runs "Add the code-viz build" after the checkout: it fetches
-`code-viz-build`, reads its `Built-from` commit, and copies the build over `viz/` except the paths
-changed on `gh-pages` since that commit, so a hand edit is published at once and a failed build
-never hides one. With no branch yet it publishes `viz/` as committed. The `viz/` files already on
+`code-viz-build`, reads its `Built-from` commit, checks with the GitHub compare API that this commit
+is the one being deployed or an ancestor of it, and publishes `viz/` as the build plus the `viz/`
+changes made on `gh-pages` since, so a hand edit is published at once and a failed build never
+hides one. With no branch yet, or a build of a newer or unrelated commit (an older deploy still
+queued), it publishes `viz/` as committed; the next deploy catches up. The `viz/` files already on
 `gh-pages` from before the switch stay: CI starts from them, and the site serves the build over them.
 The step is in `course/viz/pages-step.yml`.
 
