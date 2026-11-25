@@ -3,6 +3,8 @@
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -126,6 +128,9 @@ class Plan:
     removals: list
     additions: list
     assignments: list
+    group_snapshot: list
+    membership_snapshot: list
+    assignment_snapshot: list
 
 
 def plan_changes(course, name, mapping, titles, prune=False):
@@ -145,7 +150,7 @@ def plan_changes(course, name, mapping, titles, prune=False):
         removal.extend((user_id, group_name, member.id)
                        for user_id, (group_name, member) in members.items() if user_id not in mapping)
 
-    assignments = []
+    assignments, assignment_snapshot = [], []
     if titles:
         by_name = {}
         for assignment in course.get_assignments():
@@ -158,10 +163,37 @@ def plan_changes(course, name, mapping, titles, prune=False):
             assignment = course.get_assignment(matches[0].id)
             if assignment.id != matches[0].id or assignment.name != title:
                 raise ValueError(f"assignment changed while planning: {title!r}")
+            assignment_snapshot.append((title, assignment.id, getattr(assignment, "group_category_id", None)))
             if check_assignment_group_set(assignment, category.id if category is not None else None):
                 assignments.append(assignment)
     new_groups = sorted(set(mapping.values()) - groups.keys())
-    return Plan(category, new_groups, sorted(removal), sorted(addition), assignments)
+    group_snapshot = sorted((name, group.id) for name, group in groups.items())
+    membership_snapshot = sorted(
+        (uid, name, member.id) for uid, (name, member) in members.items()
+    )
+    return Plan(category, new_groups, sorted(removal), sorted(addition), assignments,
+                group_snapshot, membership_snapshot, assignment_snapshot)
+
+
+def plan_digest(course, name, plan, mapping, titles, prune):
+    payload = {
+        "version": 1,
+        "course": course.id,
+        "group_set": name,
+        "category": getattr(plan.category, "id", None),
+        "prune": prune,
+        "mapping": sorted(mapping.items()),
+        "titles": sorted(titles),
+        "groups": plan.group_snapshot,
+        "memberships": plan.membership_snapshot,
+        "assignments": plan.assignment_snapshot,
+        "create_groups": plan.new_groups,
+        "remove_memberships": plan.removals,
+        "add_memberships": plan.additions,
+        "attach_assignments": [item.id for item in plan.assignments],
+    }
+    serialized = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(serialized.encode("ascii")).hexdigest()
 
 
 def describe(plan, mapping, titles, prune):
@@ -175,30 +207,32 @@ def describe(plan, mapping, titles, prune):
         print("Prune removes memberships omitted from the mapping or assigned elsewhere. Groups are retained.")
 
 
-def apply_plan(course, name, plan, mapping, titles, prune):
+def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
     fresh = plan_changes(course, name, mapping, titles, prune)
-    def signature(value):
-        return (getattr(value.category, "id", None), value.new_groups, value.removals,
-                value.additions, [item.id for item in value.assignments])
-
-    if signature(fresh) != signature(plan):
+    fresh_digest = plan_digest(course, name, fresh, mapping, titles, prune)
+    if prune and fresh_digest != expected_plan:
+        raise ValueError("reviewed prune plan digest missing or changed; review a fresh dry run")
+    if fresh_digest != plan_digest(course, name, plan, mapping, titles, prune):
         raise ValueError("Canvas state changed after planning; review a fresh dry run")
     category = ensure_group_set(course, name)
     if plan.category is not None and category.id != plan.category.id:
         raise ValueError("Canvas group set changed after planning")
+    group_ids = dict(plan.group_snapshot)
     for group_name in plan.new_groups:
         groups, _ = group_state(category)
-        if group_name not in groups:
-            created = category.create_group(name=group_name)
-            groups, _ = group_state(category)
-            if group_name not in groups or groups[group_name].id != created.id:
-                raise ValueError("Canvas did not verify the newly created group")
+        if group_name in groups:
+            raise ValueError("a planned group appeared after planning")
+        created = category.create_group(name=group_name)
+        groups, _ = group_state(category)
+        if group_name not in groups or groups[group_name].id != created.id:
+            raise ValueError("Canvas did not verify the newly created group")
+        group_ids[group_name] = created.id
 
-    for user_id, group_name, membership_id in plan.removals:
+    def remove_membership(user_id, group_name, membership_id):
         _, members = group_state(category)
         current = members.get(user_id)
         if not current:
-            continue
+            raise ValueError("a membership disappeared after planning")
         if current[0] != group_name or current[1].id != membership_id:
             raise ValueError("a membership changed after planning")
         current[1].remove_self()
@@ -206,19 +240,28 @@ def apply_plan(course, name, plan, mapping, titles, prune):
         if user_id in members:
             raise ValueError("Canvas did not verify the membership removal")
 
-    for user_id, group_name in plan.additions:
+    def add_membership(user_id, group_name):
         groups, members = group_state(category)
         prior = members.get(user_id)
         if prior:
-            if prior[0] == group_name:
-                continue
             raise ValueError("a membership changed after planning")
-        if group_name not in groups:
-            raise ValueError("a planned group is missing")
+        if group_name not in groups or groups[group_name].id != group_ids[group_name]:
+            raise ValueError("a planned group changed or is missing")
         groups[group_name].create_membership(user_id)
         _, members = group_state(category)
         if user_id not in members or members[user_id][0] != group_name:
             raise ValueError("Canvas did not verify the membership addition")
+
+    removals = {user_id: (group_name, member_id) for user_id, group_name, member_id in plan.removals}
+    for user_id, group_name in plan.additions:
+        if user_id in removals:
+            groups, _ = group_state(category)
+            if group_name not in groups or groups[group_name].id != group_ids[group_name]:
+                raise ValueError("planned move destination changed or is missing")
+            remove_membership(user_id, *removals.pop(user_id))
+        add_membership(user_id, group_name)
+    for user_id, (group_name, member_id) in removals.items():
+        remove_membership(user_id, group_name, member_id)
 
     for assignment in plan.assignments:
         ensure_assignment_group_set(course, assignment, category.id)
@@ -241,7 +284,12 @@ def main(argv=None):
     action.add_argument("--dry-run", action="store_true", help="read Canvas and print plan counts (default)")
     action.add_argument("--apply", action="store_true", help="apply and verify the plan")
     parser.add_argument("--prune", action="store_true", help="remove memberships not present in the mapping")
+    parser.add_argument("--expected-plan", help="reviewed dry-run digest required with --apply --prune")
     args = parser.parse_args(argv)
+    if args.expected_plan is not None and not (args.prune and args.apply):
+        parser.error("--expected-plan requires --prune --apply")
+    if args.prune and args.apply and not args.expected_plan:
+        parser.error("--prune --apply requires the reviewed --expected-plan digest")
     try:
         name = group_set_name(args.group_set)
         titles = read_syllabus(args.markdown)
@@ -272,11 +320,13 @@ def main(argv=None):
             raise ValueError("--prune requires a complete nonempty active-roster mapping")
         plan = plan_changes(course, name, mapping, titles, args.prune)
         describe(plan, mapping, titles, args.prune)
+        if args.prune:
+            print(f"Prune plan digest: {plan_digest(course, name, plan, mapping, titles, True)}")
         if args.apply and (mapping or titles):
             active_now = roster(course)
             if not mapping.keys() <= active_now.keys() or (args.prune and mapping.keys() != active_now.keys()):
                 raise ValueError("active roster changed after planning; review a fresh dry run")
-            apply_plan(course, name, plan, mapping, titles, args.prune)
+            apply_plan(course, name, plan, mapping, titles, args.prune, args.expected_plan)
             print("Canvas read-back verified.")
         elif args.apply:
             print("No group assignments or memberships were requested.")

@@ -123,7 +123,8 @@ def test_conflicting_membership_refuses_without_prune_and_moves_explicitly():
         cli.plan_changes(course, Category.name, {1: "Two"}, set())
     assert course.writes == []
     plan = cli.plan_changes(course, Category.name, {1: "Two"}, set(), True)
-    cli.apply_plan(course, Category.name, plan, {1: "Two"}, set(), True)
+    cli.apply_plan(course, Category.name, plan, {1: "Two"}, set(), True,
+                   cli.plan_digest(course, Category.name, plan, {1: "Two"}, set(), True))
     assert course.writes == [("group", "Two"), ("remove", 100, 1), ("add", 101, 1)]
 
 
@@ -198,10 +199,60 @@ def test_dry_run_uses_all_active_enrollments_without_writing(tmp_path, monkeypat
     mapping.write_text("student,group\n1,One\n2,Two\n")
     args = ["-c", str(course.id), "-m", str(syllabus), "--mapping", str(mapping), "--dry-run", "--prune"]
     assert cli.main(args) == 0
-    assert "Memberships to add: 2" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Memberships to add: 2" in output
+    digest = next(line.split(": ", 1)[1] for line in output.splitlines() if line.startswith("Prune plan digest: "))
+    assert len(digest) == 64
     assert course.writes == []
+
+    apply_args = [arg for arg in args if arg != "--dry-run"] + ["--apply"]
+    with pytest.raises(SystemExit) as error:
+        cli.main(apply_args)
+    assert error.value.code == 2
+    assert cli.main(apply_args + ["--expected-plan", "stale"]) == 1
+    assert course.writes == []
+    assert cli.main(apply_args + ["--expected-plan", digest]) == 0
+    course.writes.clear()
 
     mapping.write_text("student,group\n1,One\n")
     assert cli.main(args) == 1
     assert "complete nonempty active-roster mapping" in capsys.readouterr().err
     assert course.writes == []
+
+
+def test_prune_requires_exact_reviewed_fresh_plan():
+    course = Course()
+    category = course.create_group_category(Category.name)
+    group = category.create_group(name="One")
+    group.create_membership(1)
+    course.writes.clear()
+    mapping = {1: "Two"}
+    plan = cli.plan_changes(course, Category.name, mapping, set(), True)
+    digest = cli.plan_digest(course, Category.name, plan, mapping, set(), True)
+    with pytest.raises(ValueError, match="reviewed prune plan"):
+        cli.apply_plan(course, Category.name, plan, mapping, set(), True)
+    assert course.writes == []
+
+    group.members[1].id += 1
+    fresh = cli.plan_changes(course, Category.name, mapping, set(), True)
+    with pytest.raises(ValueError, match="reviewed prune plan"):
+        cli.apply_plan(course, Category.name, fresh, mapping, set(), True, digest)
+    assert course.writes == []
+
+
+def test_failed_move_never_removes_the_next_membership():
+    course = Course()
+    category = course.create_group_category(Category.name)
+    first = category.create_group(name="One")
+    second = category.create_group(name="Two")
+    first.create_membership(1)
+    first.create_membership(2)
+    second.persist = False
+    course.writes.clear()
+    mapping = {1: "Two", 2: "Two"}
+    plan = cli.plan_changes(course, Category.name, mapping, set(), True)
+    digest = cli.plan_digest(course, Category.name, plan, mapping, set(), True)
+    with pytest.raises(ValueError, match="did not verify the membership addition"):
+        cli.apply_plan(course, Category.name, plan, mapping, set(), True, digest)
+    assert course.writes == [("remove", first.id, 1), ("add", second.id, 1)]
+    assert 2 in first.members
