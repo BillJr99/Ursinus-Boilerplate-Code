@@ -20,6 +20,11 @@ import yaml
 import os
 import traceback
 
+from canvas_group_sets import (
+    ensure_group_set, find_group_set, group_set_name, syllabus_group_assignments,
+    verify_assignment_group_set,
+)
+
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/course.py
 # https://github.com/ucfopen/canvasapi/blob/develop/canvasapi/canvas.py
 
@@ -1233,12 +1238,18 @@ def plan_modules(postdict, homepage, lia_base):
 
     return {'modules': modules, 'sessions': sessions}
 
-def process_markdown(fname, canvas, course, courseid, homepage):
+def process_markdown(fname, canvas, course, courseid, homepage, group_set=None):
     f = open(fname, 'r')
     mdcontents = f.read()
     
     post = frontmatter.loads(mdcontents)
     postdict = post.to_dict()
+    group_assignments = syllabus_group_assignments(postdict)
+    category_name = group_set_name(group_set) if group_assignments and not skipassignments else None
+    if category_name is not None:
+        # Refuse an ambiguous or unsuitable set before changing the course.
+        find_group_set(course, category_name)
+    category = None
     
     coursecontext = 'course_' + str(courseid)
 
@@ -1446,6 +1457,10 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                 inputdict['notify_of_update'] = True
                 inputdict['published'] = True
                 inputdict['points_possible'] = points
+                if category_name is not None and description in group_assignments:
+                    if category is None:
+                        category = ensure_group_set(course, category_name)
+                    inputdict['group_category_id'] = category.id
                 
                 if dlink is None:
                     inputdict['description'] = description 
@@ -1469,6 +1484,8 @@ def process_markdown(fname, canvas, course, courseid, homepage):
                     continue
                 
                 assignmentid = assignment.id
+                if 'group_category_id' in inputdict:
+                    verify_assignment_group_set(course, assignmentid, category.id, description)
                 
                 # Create a Rubric for this Assignment if Specified
                 if "rubricpath" in deliverable:
@@ -1754,6 +1771,7 @@ def usage():
     print("\t[-l | --nolecturecalendar]\tDo not upload lecture calendar")
     print("\t[-k | --nodeletes]\tDo not delete old data")
     print("\nDo not create an assignment group called Assignments, and do prefix assignment names with the desired Assignment Group Name: Deliverable")
+    print("\t--group-set NAME\tCanvas group set for deliverables with group: true")
     print("\nA deliverable's submission_types recognizes these tokens, and a deliverable may name more than one:")
     print("\tonpaper\t\tsubmitted on paper, with no Canvas upload")
     print("\tnoupload\ttyped into Canvas, with no file upload")
@@ -1768,7 +1786,7 @@ if __name__ == "__main__":
     # Parse user options
     # https://docs.python.org/3/library/getopt.html
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes"])
+        opts, args = getopt.getopt(sys.argv[1:], "hc:m:w:a:u:t:e:dsolk", ["help", "courseid=", "markdown=", "webpage=", "apikey=", "userid=", "timezone=", "duetime=", "nodiscussions", "noassignments", "noofficehours", "nolecturecalendar", "nodeletes", "group-set="])
     except getopt.GetoptError as err:
         # print help information and exit:
         print(err)  # will print something like "option -z not recognized"
@@ -1779,7 +1797,8 @@ if __name__ == "__main__":
     markdownfile = None
     coursehomepage = None
     USER_ID = None
-    API_KEY = None
+    API_KEY = os.environ.get("CANVAS_API_KEY")
+    group_set = None
 
     for o, a in opts:
         if o in ("-h", "--help"):
@@ -1810,6 +1829,8 @@ if __name__ == "__main__":
             skipofficehours = True   
         elif o in ("-l", "--nolecturecalendar"):
             skiplecturecalendar = True
+        elif o == "--group-set":
+            group_set = a
         elif o in ("-k", "--nodeletes"):
             skipalldeletes = True
 
@@ -1834,7 +1855,7 @@ if __name__ == "__main__":
 
     printlog("Reading Markdown...")
     # Read Course Markdown File
-    process_markdown(markdownfile, canvas, course, courseid, coursehomepage)
+    process_markdown(markdownfile, canvas, course, courseid, coursehomepage, group_set=group_set)
 
     printlog("Hiding/Showing Tabs...")
     # Hide Navigation Tabs
