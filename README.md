@@ -38,5 +38,10 @@ its submission state. If it belongs to a different set, resolve that
 assignment in Canvas before applying the generated change.
 
 Use `course/ursinus_group_assignments.py --help` to plan roster
-assignments interactively or from a CSV or YAML file and verify the result.
+assignments interactively or from a CSV or YAML file with `student` and
+`group` fields. Use `--check` for offline validation, `--dry-run` to preview
+changes, and `--apply` to write and verify them. Memberships are retained
+by default. To remove memberships, supply a complete active roster mapping,
+review the `--dry-run --prune` plan, and pass its digest to
+`--apply --prune --expected-plan DIGEST`. Existing group objects are retained.
 Run authorized Canvas operations through the institutional Canvas route.
