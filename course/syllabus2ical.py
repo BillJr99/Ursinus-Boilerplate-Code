@@ -1,10 +1,11 @@
 import frontmatter
 import sys
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 from dateutil import tz
 import os
 import yaml
+from zoneinfo import ZoneInfo
 
 uidseed = -1
 
@@ -248,6 +249,11 @@ outf = open(outfname, 'w+')
 coursename = postdict['info']['course_title']
 startdate = postdict['info']['course_start_date']
 enddate = postdict['info']['course_end_date']
+# RFC 5545 requires UTC UNTIL for these timezone-aware, locally scheduled recurrences.
+# Convert the end of the Eastern course date, including the date rollover.
+course_end_eastern = parseDate(enddate).replace(hour=23, minute=59, second=59,
+                                              tzinfo=ZoneInfo("America/New_York"))
+dtuntil = course_end_eastern.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 homepage = postdict['info']['course_homepage']
 lia_base = get_lia_base(load_site_config(fname))
 isM = postdict['info']['class_meets_days']['isM']
@@ -279,11 +285,6 @@ for i in range(len(postdict['info']['class_meets_locations'])):
         dtend = dtend + "T"
         dtend = dtend + getTimeString(parseTime(meeting['endtime'])) # leave in local time, timezone info given above assuming Eastern Time
         
-        dtuntil = getDateString(parseDate(enddate)) # for recurrence rule
-        dtuntil = dtuntil + "T"
-        dtuntil = dtuntil + "235959"
-        dtuntil = dtuntil + "Z" 
-
         location = meeting['place']
         
         repeatday = geticalday(meeting['day'])
@@ -391,11 +392,6 @@ for instructor in postdict['instructors']:
             dtend = getDateString(startdateoffset) # assume no event overlaps a day boundary, ends on start date
             dtend = dtend + "T"
             dtend = dtend + getTimeString(parseTime(officehour['endtime'])) # leave in local time, timezone info given above assuming Eastern Time
-
-            dtuntil = getDateString(parseDate(enddate)) # for recurrence rule
-            dtuntil = dtuntil + "T"
-            dtuntil = dtuntil + "235959"
-            dtuntil = dtuntil + "Z" 
 
             location = officehour['location']
             

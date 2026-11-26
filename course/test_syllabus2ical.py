@@ -1,5 +1,6 @@
 """Offline tests for the calendar generated from a synthetic syllabus."""
 
+from datetime import datetime
 import os
 from pathlib import Path
 import runpy
@@ -7,11 +8,14 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
+from dateutil.rrule import rrulestr
 import yaml
 
 
 SCRIPT = Path(__file__).with_name("syllabus2ical.py").resolve()
+EASTERN = ZoneInfo("America/New_York")
 
 
 def render_calendar(start, end, schedule=()):
@@ -55,6 +59,19 @@ class SyllabusCalendarTest(unittest.TestCase):
         event = next(event for event in calendar.split("BEGIN:VEVENT\n")
                      if "SUMMARY:TEST 010 Calendar Fixture: Fixture project due" in event)
         self.assertIn("DTSTART;VALUE=DATE:20261022\n", event)
+
+    def test_evening_recurrences_include_last_eastern_day(self):
+        for start, end in (("2026/10/19", "2026/10/26"), ("2026/11/02", "2026/11/09")):
+            last = datetime.strptime(end + " 21:00", "%Y/%m/%d %H:%M").replace(tzinfo=EASTERN)
+            with self.subTest(end=end):
+                events = render_calendar(start, end).split("BEGIN:VEVENT\n")[1:]
+                self.assertEqual(len(events), 2)
+                for event in events:
+                    fields = dict(row.split(":", 1) for row in event.splitlines() if ":" in row)
+                    start_time = datetime.strptime(fields["DTSTART;TZID=US-Eastern"], "%Y%m%dT%H%M%S")
+                    rule = rrulestr(fields["RRULE"], dtstart=start_time.replace(tzinfo=EASTERN))
+                    self.assertEqual(len(list(rule)), 2, fields["SUMMARY"])
+                    self.assertEqual(list(rule)[-1], last, fields["SUMMARY"])
 
 
 if __name__ == "__main__":
