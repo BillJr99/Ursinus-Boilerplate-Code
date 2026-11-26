@@ -31,3 +31,7 @@ test('terminal string terminators preserve output between consecutive OSC sequen
  assert.equal(plain('\x1b]0;First\x1b\\alpha\x1b]0;Second\x1b\\beta\n'),'alphabeta\n');
  assert.equal(plain('\x1b]0;First\x1b\\alpha\x1b]0;Second\x07beta\n'),'alphabeta\n');
 });
+test('a bare escape in an OSC payload does not end the sequence',()=>{
+ assert.equal(plain('before\x1b]0;title\x1bpart\x07after'),'beforeafter');
+ assert.equal(plain('before\x1b]0;title\x1bpart\x1b\\'),'before');
+});
