@@ -19,6 +19,7 @@ on:
       - "files/**"
       - "_config.yml"
       - ".github/workflows/code-viz.yml"
+      - "viz/notebooks.json"
       - "viz/**"
       - "codeviz/**"
 

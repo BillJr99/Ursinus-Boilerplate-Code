@@ -781,7 +781,8 @@ Ursinus-Boilerplate-Code. Each course repo carries a short caller, `.github/work
 `Ursinus-Boilerplate-Code@main`. Changing the shared file changes every course at once.
 
 **When it runs.** On a push to `gh-pages` that changes `_pages/**.md`, `files/**`,
-`_config.yml`, `.github/workflows/code-viz.yml`, `viz/**` or `codeviz/**`; by hand
+`_config.yml`, `.github/workflows/code-viz.yml`, `viz/notebooks.json`, other files under `viz/**`
+or `codeviz/**`; by hand
 (Actions, code-viz, Run workflow, or `gh workflow run code-viz.yml`);
 and after the course's `update-submodules.yml` ("Reset and Sync Submodules") moved the `code`
 submodule. That workflow's last step starts code-viz itself, because a commit pushed with the
