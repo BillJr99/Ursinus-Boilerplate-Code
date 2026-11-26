@@ -43,7 +43,8 @@
   function plain(raw) {
     // Keep erase-in-line sequences until the cursor-aware pass below. Other CSI
     // sequences (including colour) remain presentation-only in this line renderer.
-    raw=raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'');
+    // Stop each OSC at its first BEL or string terminator.
+    raw=raw.replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/g,'');
     const lines=['']; let row=0,col=0,returned=false;
     const tokens=raw.match(/\x1b\[[0-?]*[ -/]*[@-~]|[\s\S]/gu)||[];
     for(const c of tokens) {
