@@ -18,8 +18,8 @@ SCRIPT = Path(__file__).with_name("syllabus2ical.py").resolve()
 EASTERN = ZoneInfo("America/New_York")
 
 
-def render_calendar(start, end, schedule=()):
-    evening = {"day": "M", "starttime": "9:00 PM", "endtime": "10:00 PM"}
+def render_calendar(start, end, schedule=(), *, holidays=(), starttime="9:00 PM", endtime="10:00 PM"):
+    monday = {"day": "M", "starttime": starttime, "endtime": endtime}
     doc = {
         "info": {
             "course_number": "TEST 010",
@@ -29,13 +29,13 @@ def render_calendar(start, end, schedule=()):
             "course_homepage": "https://course.example/",
             "class_meets_days": {f"is{day}": day == "M" for day in "MTWRFSU"},
             "course_sections": [{"section": "A"}],
-            "class_meets_locations": [{"section": [{**evening, "place": "Fixture room"}]}],
+            "class_meets_locations": [{"section": [{**monday, "place": "Fixture room"}]}],
             "midtermexam": [{"mdate": "TBD"}],
             "finalexam": [{"fdate": "TBD"}],
         },
-        "instructors": [{"name": "Fixture", "officehours": [{**evening, "location": "Fixture room"}]}],
+        "instructors": [{"name": "Fixture", "officehours": [{**monday, "location": "Fixture room"}]}],
         "schedule": list(schedule),
-        "university": {"semester": "Fall", "fallholidays": [], "fall": []},
+        "university": {"semester": "Fall", "fallholidays": [{"date": date} for date in holidays], "fall": []},
     }
     with tempfile.TemporaryDirectory() as directory:
         syllabus = Path(directory) / "syllabus.md"
@@ -48,6 +48,14 @@ def render_calendar(start, end, schedule=()):
             return (Path("files") / "TEST 010.ics").read_text(encoding="utf-8")
         finally:
             os.chdir(cwd)
+
+
+def recurring_events(calendar):
+    for event in calendar.split("BEGIN:VEVENT\n")[1:]:
+        lines = event.splitlines()
+        recurrence = [line for line in lines if line.startswith(("DTSTART", "RRULE", "EXDATE"))]
+        summary = next(line.removeprefix("SUMMARY:") for line in lines if line.startswith("SUMMARY:"))
+        yield summary, recurrence
 
 
 class SyllabusCalendarTest(unittest.TestCase):
@@ -64,14 +72,43 @@ class SyllabusCalendarTest(unittest.TestCase):
         for start, end in (("2026/10/19", "2026/10/26"), ("2026/11/02", "2026/11/09")):
             last = datetime.strptime(end + " 21:00", "%Y/%m/%d %H:%M").replace(tzinfo=EASTERN)
             with self.subTest(end=end):
-                events = render_calendar(start, end).split("BEGIN:VEVENT\n")[1:]
+                events = list(recurring_events(render_calendar(start, end)))
                 self.assertEqual(len(events), 2)
-                for event in events:
-                    fields = dict(row.split(":", 1) for row in event.splitlines() if ":" in row)
-                    start_time = datetime.strptime(fields["DTSTART;TZID=US-Eastern"], "%Y%m%dT%H%M%S")
-                    rule = rrulestr(fields["RRULE"], dtstart=start_time.replace(tzinfo=EASTERN))
-                    self.assertEqual(len(list(rule)), 2, fields["SUMMARY"])
-                    self.assertEqual(list(rule)[-1], last, fields["SUMMARY"])
+                for summary, recurrence in events:
+                    dates = list(rrulestr("\n".join(recurrence), tzids={"US-Eastern": EASTERN}))
+                    self.assertEqual(len(dates), 2, summary)
+                    self.assertEqual(dates[-1], last, summary)
+
+    def test_evening_recurrences_exclude_only_matching_weekday_holidays(self):
+        calendar = render_calendar(
+            "2026/10/19", "2026/11/09", holidays=("2026/10/26", "2026/11/03"),
+        )
+        expected = [datetime(2026, month, day, 21, tzinfo=EASTERN)
+                    for month, day in ((10, 19), (11, 2), (11, 9))]
+        events = list(recurring_events(calendar))
+        self.assertEqual(len(events), 2)
+        for summary, recurrence in events:
+            with self.subTest(summary=summary):
+                self.assertEqual(
+                    [line for line in recurrence if line.startswith("EXDATE")],
+                    ["EXDATE;TZID=US-Eastern:20261026T210000"],
+                )
+                dates = rrulestr("\n".join(recurrence), tzids={"US-Eastern": EASTERN})
+                self.assertEqual(list(dates), expected)
+
+    def test_daytime_recurrences_keep_both_mondays(self):
+        calendar = render_calendar(
+            "2026/11/02", "2026/11/09", starttime="11:00 AM", endtime="12:00 PM",
+        )
+        events = list(recurring_events(calendar))
+        self.assertEqual(len(events), 2)
+        for summary, recurrence in events:
+            with self.subTest(summary=summary):
+                dates = rrulestr("\n".join(recurrence), tzids={"US-Eastern": EASTERN})
+                self.assertEqual(list(dates), [
+                    datetime(2026, 11, 2, 11, tzinfo=EASTERN),
+                    datetime(2026, 11, 9, 11, tzinfo=EASTERN),
+                ])
 
 
 if __name__ == "__main__":
