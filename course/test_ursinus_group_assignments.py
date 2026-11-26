@@ -303,3 +303,30 @@ def test_apply_reads_only_the_affected_group_per_membership():
     cli.apply_plan(course, Category.name, plan, mapping, set(), False)
     assert unrelated.reads - before == 2
     assert set(group.members) == set(mapping)
+
+
+def test_move_preserves_source_when_destination_is_renamed(monkeypatch):
+    course = Course()
+    category = course.create_group_category(Category.name)
+    source = category.create_group(name="One")
+    source.create_membership(1)
+    destination = category.create_group(name="Two")
+    mapping = {1: "Two"}
+    plan = cli.plan_changes(course, Category.name, mapping, set(), True)
+    expected = cli.plan_digest(course, Category.name, plan, mapping, set(), True)
+    original = source.get_memberships
+    reads = 0
+
+    def rename_after_preflight():
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            destination.name = "Renamed after review"
+        return original()
+
+    monkeypatch.setattr(source, "get_memberships", rename_after_preflight)
+    course.writes.clear()
+    with pytest.raises(ValueError, match="Canvas groups changed"):
+        cli.apply_plan(course, Category.name, plan, mapping, set(), True, expected)
+    assert course.writes == []
+    assert 1 in source.members

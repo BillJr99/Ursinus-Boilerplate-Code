@@ -227,11 +227,10 @@ def describe(plan, mapping, titles, prune):
         print("Prune removes memberships omitted from the mapping or assigned elsewhere. Groups are retained.")
 
 
-def paced_write(operation, *args, **kwargs):
+def pace_writes():
     # Do not retry a mutation whose result is unknown. A fresh reviewed run can
     # reconcile partial progress using the current state.
     time.sleep(2)
-    return operation(*args, **kwargs)
 
 
 def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
@@ -243,53 +242,70 @@ def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
         raise ValueError("Canvas state changed after planning; review a fresh dry run")
     category = fresh.category
     if category is None:
+        pace_writes()
         if find_group_set(course, name) is not None:
             raise ValueError("Canvas group set appeared after planning")
-        category = paced_write(create_group_set, course, name)
+        category = create_group_set(course, name)
 
-    groups = group_index(category)
     group_ids = dict(plan.group_snapshot)
-    if {name: group.id for name, group in groups.items()} != group_ids:
-        raise ValueError("Canvas groups changed after planning")
+
+    def current_groups():
+        current = find_group_set(course, name)
+        if current is None or current.id != category.id:
+            raise ValueError("Canvas group set changed after planning")
+        groups = group_index(current)
+        if {group_name: group.id for group_name, group in groups.items()} != group_ids:
+            raise ValueError("Canvas groups changed after planning")
+        return current, groups
+
+    current_groups()
     for group_name in plan.new_groups:
-        created = paced_write(category.create_group, name=group_name)
-        groups = group_index(category)
+        pace_writes()
+        current, _ = current_groups()
+        created = current.create_group(name=group_name)
         group_ids[group_name] = created.id
-        if {name: group.id for name, group in groups.items()} != group_ids:
-            raise ValueError("Canvas did not verify the newly created group")
+        current_groups()
 
     if plan.removals and check_membership_removals(course, category.id) != plan.removal_assignment_snapshot:
         raise ValueError("attached assignments changed after planning")
 
-    def remove_membership(user_id, group_name, membership_id):
-        group = groups[group_name]
-        current = group_members(group).get(user_id)
+    def remove_membership(user_id, group_name, membership_id, destination=None):
+        pace_writes()
+        _, groups = current_groups()
+        if destination is not None and user_id in group_members(groups[destination]):
+            raise ValueError("planned move destination membership changed")
+        current = group_members(groups[group_name]).get(user_id)
         if current is None or current.id != membership_id:
             raise ValueError("a membership changed after planning")
-        paced_write(group.remove_user, user_id)
+        _, groups = current_groups()
+        group = groups[group_name]
+        group.remove_user(user_id)
         if user_id in group_members(group):
             raise ValueError("Canvas did not verify the membership removal")
 
     def add_membership(user_id, group_name):
-        group = groups[group_name]
-        if user_id in group_members(group):
+        pace_writes()
+        _, groups = current_groups()
+        if user_id in group_members(groups[group_name]):
             raise ValueError("a membership changed after planning")
-        paced_write(group.create_membership, user_id)
+        _, groups = current_groups()
+        group = groups[group_name]
+        group.create_membership(user_id)
         if user_id not in group_members(group):
             raise ValueError("Canvas did not verify the membership addition")
 
     removals = {user_id: (group_name, member_id) for user_id, group_name, member_id in plan.removals}
     for user_id, group_name in plan.additions:
         if user_id in removals:
-            if user_id in group_members(groups[group_name]):
-                raise ValueError("planned move destination membership changed")
-            remove_membership(user_id, *removals.pop(user_id))
+            remove_membership(user_id, *removals.pop(user_id), destination=group_name)
         add_membership(user_id, group_name)
     for user_id, (group_name, member_id) in removals.items():
         remove_membership(user_id, group_name, member_id)
 
     for assignment in plan.assignments:
-        paced_write(ensure_assignment_group_set, course, assignment, category.id)
+        pace_writes()
+        current_groups()
+        ensure_assignment_group_set(course, assignment, category.id)
     verified = plan_changes(course, name, mapping, titles, prune)
     if (verified.category is None or verified.category.id != category.id or verified.new_groups
             or verified.removals or verified.additions or verified.assignments):
