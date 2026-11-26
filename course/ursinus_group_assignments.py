@@ -277,6 +277,8 @@ def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
         current = group_members(groups[group_name]).get(user_id)
         if current is None or current.id != membership_id:
             raise ValueError("a membership changed after planning")
+        if check_membership_removals(course, category.id) != plan.removal_assignment_snapshot:
+            raise ValueError("attached assignments changed after planning")
         _, groups = current_groups()
         group = groups[group_name]
         group.remove_user(user_id)

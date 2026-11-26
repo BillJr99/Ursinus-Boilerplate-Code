@@ -330,3 +330,26 @@ def test_move_preserves_source_when_destination_is_renamed(monkeypatch):
         cli.apply_plan(course, Category.name, plan, mapping, set(), True, expected)
     assert course.writes == []
     assert 1 in source.members
+
+
+def test_prune_checks_submissions_before_every_removal(monkeypatch):
+    course = Course()
+    category = course.create_group_category(Category.name)
+    group = category.create_group(name="One")
+    group.create_membership(1)
+    group.create_membership(2)
+    course.assignment.group_category_id = category.id
+    plan = cli.plan_changes(course, Category.name, {}, set(), True)
+    expected = cli.plan_digest(course, Category.name, plan, {}, set(), True)
+    original = group.remove_user
+
+    def submit_after_first_removal(user_id):
+        original(user_id)
+        course.assignment.has_submitted_submissions = True
+
+    monkeypatch.setattr(group, "remove_user", submit_after_first_removal)
+    course.writes.clear()
+    with pytest.raises(ValueError, match="attached assignment has submissions"):
+        cli.apply_plan(course, Category.name, plan, {}, set(), True, expected)
+    assert course.writes == [("remove", group.id, 1)]
+    assert 2 in group.members
