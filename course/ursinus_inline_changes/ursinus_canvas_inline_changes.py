@@ -71,12 +71,12 @@ operation is a mapping with an `op` and whatever that op needs.
 
 Operations
 ----------
-    assignment.create   name, points, [due], [handout], [group], [group_set], [published],
+    assignment.create   name, points, [due], [handout], [group], [assignment_group], [group_set], [published],
                         [description], [url], [submission_types],
                         [allowed_extensions], [lock], [unlock], [position],
                         [rubricpath], [module], [handout_module]
     assignment.update   name (or id), then any of: rename, points, due, handout,
-                        unlock, lock, group, group_set, published, description, url,
+                        unlock, lock, group, assignment_group, group_set, published, description, url,
                         submission_types, allowed_extensions, position,
                         omit_from_final_grade, module, handout_module
     assignment.due      name (or id), due            -- shorthand for the above
@@ -150,7 +150,8 @@ Student group submissions
 An assignment.create or assignment.update operation can use group: true to
 attach the assignment to a student group set. Use group_set or --group-set
 to select its name. False leaves the group set alone. A string under group
-still names the assignment's gradebook group. A missing student group set is
+still names the assignment's gradebook group. To set both in one operation,
+use group: true with assignment_group: "Projects". A missing student group set is
 created only on apply, before the assignment is written.
 
 Rubrics
@@ -551,7 +552,14 @@ def parse_document(text):
 
     try:
         import yaml
-        doc = yaml.safe_load(text)
+        class ChangeLoader(yaml.SafeLoader):
+            def construct_mapping(self, node, deep=False):
+                if sum(key.value == "group" for key, _ in node.value
+                       if isinstance(key, yaml.ScalarNode)) > 1:
+                    die("duplicate group field; use assignment_group for the gradebook group")
+                return super().construct_mapping(node, deep=deep)
+
+        doc = yaml.load(text, Loader=ChangeLoader)
     except ImportError:
         errors.append("PyYAML not installed, so YAML input is unavailable")
     except Exception as exc:
@@ -609,6 +617,12 @@ def parse_document(text):
         change = dict(change)
         change["op"] = op
         change["_index"] = idx + 1
+        if "assignment_group" in change:
+            value = change["assignment_group"]
+            if op not in {"assignment.create", "assignment.update"} or not isinstance(value, str) or not value.strip():
+                die("operation %d: assignment_group requires a nonempty gradebook group name on an assignment" % (idx + 1))
+            if isinstance(change.get("group"), str):
+                die("operation %d: specify the gradebook group only once" % (idx + 1))
         if "group_set" in change:
             if op not in {"assignment.create", "assignment.update"} or change.get("group") is not True:
                 die("operation %d: group_set requires group: true on assignment.create or assignment.update" % (idx + 1))
@@ -1284,9 +1298,18 @@ def plan_assignment_group_set(canvas, change, lines, assignment=None):
 def apply_assignment_group_set(canvas, plan):
     groups = group_sets_module()
     name, expected_id = plan
-    if expected_id is None:
-        return groups.ensure_group_set(canvas.course, name).id
     category = groups.find_group_set(canvas.course, name)
+    created = getattr(canvas, "_created_group_sets", {})
+    if expected_id is None:
+        if name in created:
+            expected_id = created[name]
+        elif category is not None:
+            raise ValueError("Canvas group set appeared since planning: %r" % name)
+        else:
+            category = groups.create_group_set(canvas.course, name)
+            created[name] = category.id
+            canvas._created_group_sets = created
+            return category.id
     if category is None or category.id != expected_id:
         raise ValueError("Canvas group set changed since planning: %r" % name)
     return category.id
@@ -1317,10 +1340,11 @@ def assignment_payload(canvas, change):
         payload["description"] = '%s (<a href="%s">%s</a>)' % (label, url, url)
         summary.append("url -> %s" % url)
 
-    if "group" in change and not isinstance(change["group"], bool):
-        group = canvas.find_group(change["group"])
+    gradebook_group = change.get("assignment_group", change.get("group"))
+    if gradebook_group is not None and not isinstance(gradebook_group, bool):
+        group = canvas.find_group(gradebook_group)
         if group is None:
-            die("no assignment group named %r" % change["group"])
+            die("no assignment group named %r" % gradebook_group)
         payload["assignment_group_id"] = group.id
         summary.append("group -> %s (%s)" % (group.name, group.id))
 

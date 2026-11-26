@@ -32,7 +32,9 @@ Run the inline script with `--generate` to see create and update operations
 for group assignments. It names the intended set in the change document so
 a later apply uses that same name. Inline `group: true` requests group
 submissions, and a string such as `group: "Projects"` still selects a
-gradebook assignment group. With an existing assignment, the tools refuse
+gradebook assignment group. Use `group: true` with
+`assignment_group: "Projects"` to set both on one inline operation.
+With an existing assignment, the tools refuse
 to change its group set if it has submissions or Canvas does not confirm
 its submission state. If it belongs to a different set, resolve that
 assignment in Canvas before applying the generated change.

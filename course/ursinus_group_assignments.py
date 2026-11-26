@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,8 +15,9 @@ import yaml
 
 from canvas_group_sets import (
     check_assignment_group_set,
+    check_membership_removals,
+    create_group_set,
     ensure_assignment_group_set,
-    ensure_group_set,
     find_group_set,
     group_set_name,
     syllabus_group_assignments,
@@ -104,20 +106,35 @@ def interactive_mapping(students):
     return validate_mapping(rows)
 
 
-def group_state(category):
-    groups, members = {}, {}
-    if category is None:
-        return groups, members
+def group_index(category):
+    groups = {}
     for group in category.get_groups():
         if group.name in groups:
             raise ValueError("multiple Canvas groups have the same name in this set")
         groups[group.name] = group
-        for member in group.get_memberships():
-            if getattr(member, "group_id", None) != group.id or getattr(member, "workflow_state", None) != "accepted":
-                raise ValueError("unconfirmed group membership prevents safe planning")
-            if member.user_id in members:
+    return groups
+
+
+def group_members(group):
+    members = {}
+    for member in group.get_memberships():
+        if getattr(member, "group_id", None) != group.id or getattr(member, "workflow_state", None) != "accepted":
+            raise ValueError("unconfirmed group membership prevents safe planning")
+        if member.user_id in members:
+            raise ValueError("multiple memberships found for one student in this set")
+        members[member.user_id] = member
+    return members
+
+
+def group_state(category):
+    if category is None:
+        return {}, {}
+    groups, members = group_index(category), {}
+    for name, group in groups.items():
+        for user_id, member in group_members(group).items():
+            if user_id in members:
                 raise ValueError("multiple memberships found for one student in this set")
-            members[member.user_id] = (group.name, member)
+            members[user_id] = (name, member)
     return groups, members
 
 
@@ -131,6 +148,7 @@ class Plan:
     group_snapshot: list
     membership_snapshot: list
     assignment_snapshot: list
+    removal_assignment_snapshot: list
 
 
 def plan_changes(course, name, mapping, titles, prune=False):
@@ -166,18 +184,19 @@ def plan_changes(course, name, mapping, titles, prune=False):
             assignment_snapshot.append((title, assignment.id, getattr(assignment, "group_category_id", None)))
             if check_assignment_group_set(assignment, category.id if category is not None else None):
                 assignments.append(assignment)
+    removal_assignment_snapshot = check_membership_removals(course, category.id) if removal else []
     new_groups = sorted(set(mapping.values()) - groups.keys())
     group_snapshot = sorted((name, group.id) for name, group in groups.items())
     membership_snapshot = sorted(
         (uid, name, member.id) for uid, (name, member) in members.items()
     )
     return Plan(category, new_groups, sorted(removal), sorted(addition), assignments,
-                group_snapshot, membership_snapshot, assignment_snapshot)
+                group_snapshot, membership_snapshot, assignment_snapshot, removal_assignment_snapshot)
 
 
 def plan_digest(course, name, plan, mapping, titles, prune):
     payload = {
-        "version": 1,
+        "version": 2,
         "course": course.id,
         "group_set": name,
         "category": getattr(plan.category, "id", None),
@@ -187,6 +206,7 @@ def plan_digest(course, name, plan, mapping, titles, prune):
         "groups": plan.group_snapshot,
         "memberships": plan.membership_snapshot,
         "assignments": plan.assignment_snapshot,
+        "removal_assignments": plan.removal_assignment_snapshot,
         "create_groups": plan.new_groups,
         "remove_memberships": plan.removals,
         "add_memberships": plan.additions,
@@ -207,6 +227,13 @@ def describe(plan, mapping, titles, prune):
         print("Prune removes memberships omitted from the mapping or assigned elsewhere. Groups are retained.")
 
 
+def paced_write(operation, *args, **kwargs):
+    # Do not retry a mutation whose result is unknown. A fresh reviewed run can
+    # reconcile partial progress using the current state.
+    time.sleep(2)
+    return operation(*args, **kwargs)
+
+
 def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
     fresh = plan_changes(course, name, mapping, titles, prune)
     fresh_digest = plan_digest(course, name, fresh, mapping, titles, prune)
@@ -214,57 +241,55 @@ def apply_plan(course, name, plan, mapping, titles, prune, expected_plan=None):
         raise ValueError("reviewed prune plan digest missing or changed; review a fresh dry run")
     if fresh_digest != plan_digest(course, name, plan, mapping, titles, prune):
         raise ValueError("Canvas state changed after planning; review a fresh dry run")
-    category = ensure_group_set(course, name)
-    if plan.category is not None and category.id != plan.category.id:
-        raise ValueError("Canvas group set changed after planning")
+    category = fresh.category
+    if category is None:
+        if find_group_set(course, name) is not None:
+            raise ValueError("Canvas group set appeared after planning")
+        category = paced_write(create_group_set, course, name)
+
+    groups = group_index(category)
     group_ids = dict(plan.group_snapshot)
+    if {name: group.id for name, group in groups.items()} != group_ids:
+        raise ValueError("Canvas groups changed after planning")
     for group_name in plan.new_groups:
-        groups, _ = group_state(category)
-        if group_name in groups:
-            raise ValueError("a planned group appeared after planning")
-        created = category.create_group(name=group_name)
-        groups, _ = group_state(category)
-        if group_name not in groups or groups[group_name].id != created.id:
-            raise ValueError("Canvas did not verify the newly created group")
+        created = paced_write(category.create_group, name=group_name)
+        groups = group_index(category)
         group_ids[group_name] = created.id
+        if {name: group.id for name, group in groups.items()} != group_ids:
+            raise ValueError("Canvas did not verify the newly created group")
+
+    if plan.removals and check_membership_removals(course, category.id) != plan.removal_assignment_snapshot:
+        raise ValueError("attached assignments changed after planning")
 
     def remove_membership(user_id, group_name, membership_id):
-        _, members = group_state(category)
-        current = members.get(user_id)
-        if not current:
-            raise ValueError("a membership disappeared after planning")
-        if current[0] != group_name or current[1].id != membership_id:
+        group = groups[group_name]
+        current = group_members(group).get(user_id)
+        if current is None or current.id != membership_id:
             raise ValueError("a membership changed after planning")
-        current[1].remove_self()
-        _, members = group_state(category)
-        if user_id in members:
+        paced_write(group.remove_user, user_id)
+        if user_id in group_members(group):
             raise ValueError("Canvas did not verify the membership removal")
 
     def add_membership(user_id, group_name):
-        groups, members = group_state(category)
-        prior = members.get(user_id)
-        if prior:
+        group = groups[group_name]
+        if user_id in group_members(group):
             raise ValueError("a membership changed after planning")
-        if group_name not in groups or groups[group_name].id != group_ids[group_name]:
-            raise ValueError("a planned group changed or is missing")
-        groups[group_name].create_membership(user_id)
-        _, members = group_state(category)
-        if user_id not in members or members[user_id][0] != group_name:
+        paced_write(group.create_membership, user_id)
+        if user_id not in group_members(group):
             raise ValueError("Canvas did not verify the membership addition")
 
     removals = {user_id: (group_name, member_id) for user_id, group_name, member_id in plan.removals}
     for user_id, group_name in plan.additions:
         if user_id in removals:
-            groups, _ = group_state(category)
-            if group_name not in groups or groups[group_name].id != group_ids[group_name]:
-                raise ValueError("planned move destination changed or is missing")
+            if user_id in group_members(groups[group_name]):
+                raise ValueError("planned move destination membership changed")
             remove_membership(user_id, *removals.pop(user_id))
         add_membership(user_id, group_name)
     for user_id, (group_name, member_id) in removals.items():
         remove_membership(user_id, group_name, member_id)
 
     for assignment in plan.assignments:
-        ensure_assignment_group_set(course, assignment, category.id)
+        paced_write(ensure_assignment_group_set, course, assignment, category.id)
     verified = plan_changes(course, name, mapping, titles, prune)
     if (verified.category is None or verified.category.id != category.id or verified.new_groups
             or verified.removals or verified.additions or verified.assignments):

@@ -495,6 +495,44 @@ class GenerateModulesTests(unittest.TestCase):
             payload, _, _ = changes.assignment_payload(canvas, {"group": "Labs"})
         self.assertEqual(payload, {"assignment_group_id": 12})
 
+    def test_inline_group_submissions_and_gradebook_group_share_one_operation(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = changes.parse_document(
+            "- op: assignment.update\n  id: %s\n  group: true\n  assignment_group: Projects\n" % essay.id
+        )[0]
+        canvas = self.canvas()
+        canvas.modules_enabled = False
+        with patch.object(canvas, "find_group", return_value=SimpleNamespace(id=12, name="Projects")):
+            _, apply = changes.plan_operation(canvas, change)
+        with patch.object(changes, "sleep_for_rate_limit"):
+            apply()
+        self.assertEqual(essay.edits, [{
+            "assignment_group_id": 12, "group_category_id": self.course.categories[0].id,
+        }])
+
+    def test_inline_duplicate_group_fields_are_refused(self):
+        with self.assertRaises(SystemExit):
+            changes.parse_document(
+                "- op: assignment.create\n  name: Example\n  group: Projects\n  group: true\n"
+            )
+
+    def test_inline_apply_refuses_externally_created_group_set(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        _, apply = changes.plan_operation(self.canvas(), change)
+        self.course.create_group_category("Project Groups")
+        with patch.object(changes, "sleep_for_rate_limit"):
+            with self.assertRaisesRegex(ValueError, "group set appeared since planning"):
+                apply()
+        self.assertFalse(essay.edits)
+
+    def test_inline_apply_reuses_group_set_created_in_same_run(self):
+        canvas = self.canvas()
+        plan = ("Project Groups", None)
+        first = changes.apply_assignment_group_set(canvas, plan)
+        self.assertEqual(changes.apply_assignment_group_set(canvas, plan), first)
+        self.assertEqual(len(self.course.categories), 1)
+
     # -- review findings (one test each) --------------------------------------
 
     def test_1_new_session_cannot_steal_a_module_matched_by_name(self):

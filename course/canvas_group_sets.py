@@ -55,6 +55,11 @@ def ensure_group_set(course, name):
     category = find_group_set(course, name)
     if category is not None:
         return category
+    return create_group_set(course, name)
+
+
+def create_group_set(course, name):
+    """Create a group set and verify that Canvas returns the same set."""
     created = course.create_group_category(name)
     category = find_group_set(course, name)
     if category is None or category.id != created.id:
@@ -72,6 +77,22 @@ def check_assignment_group_set(assignment, category_id):
     if getattr(assignment, "has_submitted_submissions", None) is not False:
         raise ValueError("assignment %r has submissions or its submission state is unknown" % assignment.name)
     return True
+
+
+def check_membership_removals(course, category_id):
+    """Return the reviewed assignment state for a destructive roster change."""
+    attached = []
+    for assignment in course.get_assignments():
+        if getattr(assignment, "group_category_id", None) != category_id:
+            continue
+        fresh = course.get_assignment(assignment.id)
+        if fresh.id != assignment.id or getattr(fresh, "group_category_id", None) != category_id:
+            raise ValueError("attached assignment changed while checking group memberships")
+        submitted = getattr(fresh, "has_submitted_submissions", None)
+        if submitted is not False:
+            raise ValueError("an attached assignment has submissions or its submission state is unknown")
+        attached.append((fresh.id, submitted))
+    return sorted(attached)
 
 
 def verify_assignment_group_set(course, assignment_id, category_id, name):

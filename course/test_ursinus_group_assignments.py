@@ -1,5 +1,6 @@
 """Offline coverage of Canvas group-assignment planning and verification."""
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,8 +13,10 @@ class Group:
         self.name, self.id, self.writes = name, id, writes
         self.members = {}
         self.persist = True
+        self.reads = 0
 
     def get_memberships(self):
+        self.reads += 1
         return list(self.members.values())
 
     def create_membership(self, user_id):
@@ -21,10 +24,10 @@ class Group:
         if self.persist:
             self.members[user_id] = SimpleNamespace(
                 id=self.id * 100 + user_id, user_id=user_id, group_id=self.id, workflow_state="accepted",
-                remove_self=lambda: self.delete(user_id),
+                remove_self=lambda: pytest.fail("membership self-delete does not target the mapped user"),
             )
 
-    def delete(self, user_id):
+    def remove_user(self, user_id):
         self.writes.append(("remove", self.id, user_id))
         del self.members[user_id]
 
@@ -256,3 +259,47 @@ def test_failed_move_never_removes_the_next_membership():
         cli.apply_plan(course, Category.name, plan, mapping, set(), True, digest)
     assert course.writes == [("remove", first.id, 1), ("add", second.id, 1)]
     assert 2 in first.members
+
+
+@pytest.fixture(autouse=True)
+def no_rate_limit_delay(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+
+def test_prune_checks_attached_assignments_not_named_in_syllabus():
+    course = Course()
+    category = course.create_group_category(Category.name)
+    category.create_group(name="One").create_membership(1)
+    course.assignment.group_category_id = category.id
+    course.assignment.has_submitted_submissions = True
+    course.writes.clear()
+    with pytest.raises(ValueError, match="attached assignment has submissions"):
+        cli.plan_changes(course, Category.name, {}, set(), True)
+    assert course.writes == []
+
+
+def test_prune_refuses_new_submissions_after_review():
+    course = Course()
+    category = course.create_group_category(Category.name)
+    category.create_group(name="One").create_membership(1)
+    course.assignment.group_category_id = category.id
+    plan = cli.plan_changes(course, Category.name, {}, set(), True)
+    expected = cli.plan_digest(course, Category.name, plan, {}, set(), True)
+    course.assignment.has_submitted_submissions = None
+    course.writes.clear()
+    with pytest.raises(ValueError, match="submission state is unknown"):
+        cli.apply_plan(course, Category.name, plan, {}, set(), True, expected)
+    assert course.writes == []
+
+
+def test_apply_reads_only_the_affected_group_per_membership():
+    course = Course()
+    category = course.create_group_category(Category.name)
+    group = category.create_group(name="One")
+    unrelated = category.create_group(name="Untouched")
+    mapping = dict.fromkeys(range(1, 7), "One")
+    plan = cli.plan_changes(course, Category.name, mapping, set())
+    before = unrelated.reads
+    cli.apply_plan(course, Category.name, plan, mapping, set(), False)
+    assert unrelated.reads - before == 2
+    assert set(group.members) == set(mapping)
