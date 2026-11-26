@@ -71,12 +71,12 @@ operation is a mapping with an `op` and whatever that op needs.
 
 Operations
 ----------
-    assignment.create   name, points, [due], [handout], [group], [published],
+    assignment.create   name, points, [due], [handout], [group], [assignment_group], [group_set], [published],
                         [description], [url], [submission_types],
                         [allowed_extensions], [lock], [unlock], [position],
                         [rubricpath], [module], [handout_module]
     assignment.update   name (or id), then any of: rename, points, due, handout,
-                        unlock, lock, group, published, description, url,
+                        unlock, lock, group, assignment_group, group_set, published, description, url,
                         submission_types, allowed_extensions, position,
                         omit_from_final_grade, module, handout_module
     assignment.due      name (or id), due            -- shorthand for the above
@@ -144,6 +144,15 @@ the repository to ask. Pass `--last-class-date 2026-12-11` when the shell cannot
 answer, or `lock:` on the operation to set one outright. A default that would fall
 before the assignment's own due date is refused rather than applied. Only
 `assignment.create` gets a default; an update changes what it names and no more.
+
+Student group submissions
+-------------------------
+An assignment.create or assignment.update operation can use group: true to
+attach the assignment to a student group set. Use group_set or --group-set
+to select its name. False leaves the group set alone. A string under group
+still names the assignment's gradebook group. To set both in one operation,
+use group: true with assignment_group: "Projects". A missing student group set is
+created only on apply, before the assignment is written.
 
 Rubrics
 -------
@@ -505,6 +514,12 @@ def _sibling_path():
     return here
 
 
+def group_sets_module():
+    _sibling_path()
+    import canvas_group_sets
+    return canvas_group_sets
+
+
 def rubric_module(required=True):
     """canvas_sync_rubrics, which owns the rubric payload this script writes.
 
@@ -537,7 +552,14 @@ def parse_document(text):
 
     try:
         import yaml
-        doc = yaml.safe_load(text)
+        class ChangeLoader(yaml.SafeLoader):
+            def construct_mapping(self, node, deep=False):
+                if sum(key.value == "group" for key, _ in node.value
+                       if isinstance(key, yaml.ScalarNode)) > 1:
+                    die("duplicate group field; use assignment_group for the gradebook group")
+                return super().construct_mapping(node, deep=deep)
+
+        doc = yaml.load(text, Loader=ChangeLoader)
     except ImportError:
         errors.append("PyYAML not installed, so YAML input is unavailable")
     except Exception as exc:
@@ -595,6 +617,19 @@ def parse_document(text):
         change = dict(change)
         change["op"] = op
         change["_index"] = idx + 1
+        if "assignment_group" in change:
+            value = change["assignment_group"]
+            if op not in {"assignment.create", "assignment.update"} or not isinstance(value, str) or not value.strip():
+                die("operation %d: assignment_group requires a nonempty gradebook group name on an assignment" % (idx + 1))
+            if isinstance(change.get("group"), str):
+                die("operation %d: specify the gradebook group only once" % (idx + 1))
+        if "group_set" in change:
+            if op not in {"assignment.create", "assignment.update"} or change.get("group") is not True:
+                die("operation %d: group_set requires group: true on assignment.create or assignment.update" % (idx + 1))
+            if not isinstance(change["group_set"], str) or not change["group_set"].strip():
+                die("operation %d: group_set must be a nonempty string" % (idx + 1))
+        if isinstance(change.get("group"), bool) and op not in {"assignment.create", "assignment.update"}:
+            die("operation %d: a group boolean belongs on assignment.create or assignment.update" % (idx + 1))
         normalized.append(change)
     return normalized
 
@@ -1244,6 +1279,42 @@ ASSIGNMENT_FIELDS = (
 )
 
 
+def plan_assignment_group_set(canvas, change, lines, assignment=None):
+    if change.get("group") is not True:
+        return None
+    groups = group_sets_module()
+    name = groups.group_set_name(change.get("group_set", getattr(canvas, "group_set", None)))
+    current = groups.find_group_set(canvas.course, name)
+    current_id = current.id if current is not None else None
+    if assignment is not None:
+        if change.get("name") and assignment.name.strip() != change["name"].strip():
+            raise ValueError("group submissions require an exact assignment name")
+        groups.check_assignment_group_set(assignment, current_id)
+    lines.append("  group submissions: %r%s" %
+                 (name, " (create group set on apply)" if current is None else ""))
+    return name, current_id
+
+
+def apply_assignment_group_set(canvas, plan):
+    groups = group_sets_module()
+    name, expected_id = plan
+    category = groups.find_group_set(canvas.course, name)
+    created = getattr(canvas, "_created_group_sets", {})
+    if expected_id is None:
+        if name in created:
+            expected_id = created[name]
+        elif category is not None:
+            raise ValueError("Canvas group set appeared since planning: %r" % name)
+        else:
+            category = groups.create_group_set(canvas.course, name)
+            created[name] = category.id
+            canvas._created_group_sets = created
+            return category.id
+    if category is None or category.id != expected_id:
+        raise ValueError("Canvas group set changed since planning: %r" % name)
+    return category.id
+
+
 def assignment_payload(canvas, change):
     """Build the Canvas assignment payload from a change, and a human summary."""
     payload, summary = {}, []
@@ -1269,10 +1340,11 @@ def assignment_payload(canvas, change):
         payload["description"] = '%s (<a href="%s">%s</a>)' % (label, url, url)
         summary.append("url -> %s" % url)
 
-    if "group" in change:
-        group = canvas.find_group(change["group"])
+    gradebook_group = change.get("assignment_group", change.get("group"))
+    if gradebook_group is not None and not isinstance(gradebook_group, bool):
+        group = canvas.find_group(gradebook_group)
         if group is None:
-            die("no assignment group named %r" % change["group"])
+            die("no assignment group named %r" % gradebook_group)
         payload["assignment_group_id"] = group.id
         summary.append("group -> %s (%s)" % (group.name, group.id))
 
@@ -1625,6 +1697,7 @@ def plan_operation(canvas, change):
         payload.setdefault("published", as_bool(change.get("published", True)))
         payload.setdefault("submission_types", ["online_upload"])
         lines.append("create assignment %r" % name)
+        group_plan = plan_assignment_group_set(canvas, change, lines)
         lines.append("  %d points, %spublished, submission %s"
                      % (payload["points_possible"],
                         "" if payload["published"] else "un",
@@ -1666,7 +1739,13 @@ def plan_operation(canvas, change):
 
         def do():
             sleep_for_rate_limit()
-            created = canvas.course.create_assignment(payload)
+            outgoing = dict(payload)
+            if group_plan is not None:
+                outgoing["group_category_id"] = apply_assignment_group_set(canvas, group_plan)
+            created = canvas.course.create_assignment(outgoing)
+            if group_plan is not None:
+                group_sets_module().verify_assignment_group_set(
+                    canvas.course, created.id, outgoing["group_category_id"], name)
             canvas.assignments(refresh=True)
             done = ["created assignment %s (id %s)" % (created.name, created.id)]
 
@@ -1841,11 +1920,13 @@ def plan_operation(canvas, change):
             change["due"] = change.get("due")
 
         payload, summary, clear_extensions = assignment_payload(canvas, change)
-        if not payload and not (canvas.modules_enabled and change.get("handout")):
+        if (not payload and not (canvas.modules_enabled and change.get("handout"))
+                and not isinstance(change.get("group"), bool)):
             die("op %d (%s): nothing to change on %r"
                 % (change["_index"], op, assignment.name))
 
         lines.append("update assignment %r (id %s)" % (assignment.name, assignment.id))
+        group_plan = plan_assignment_group_set(canvas, change, lines, assignment)
         if "due_at" in payload:
             lines.append("  due   %s" % describe_due(getattr(assignment, "due_at", None)))
             lines.append("     -> %s" % describe_due(payload["due_at"]))
@@ -1856,11 +1937,28 @@ def plan_operation(canvas, change):
         moves = plan_module_moves(canvas, change, assignment, payload, lines)
 
         def do():
-            if payload:
+            outgoing = dict(payload)
+            target = assignment
+            if group_plan is not None:
+                groups = group_sets_module()
+                target = canvas.course.get_assignment(assignment.id)
+                if target.id != assignment.id or target.name != assignment.name:
+                    raise ValueError("Canvas assignment changed since group set planning")
+                if group_plan[1] is None:
+                    current = groups.find_group_set(canvas.course, group_plan[0])
+                    groups.check_assignment_group_set(target, current.id if current is not None else None)
+                category_id = apply_assignment_group_set(canvas, group_plan)
+                if groups.check_assignment_group_set(target, category_id):
+                    outgoing["group_category_id"] = category_id
+            if outgoing:
                 sleep_for_rate_limit()
-                assignment.edit(assignment=payload)
+                target.edit(assignment=outgoing)
+                if "group_category_id" in outgoing:
+                    groups.verify_assignment_group_set(
+                        canvas.course, assignment.id, outgoing["group_category_id"],
+                        outgoing.get("name", assignment.name))
                 canvas.assignments(refresh=True)
-            done = ["updated %r" % assignment.name] if payload else []
+            done = ["updated %r" % assignment.name] if outgoing else []
             if clear_extensions:
                 done.append(canvas.clear_allowed_extensions(assignment.id))
             for move in moves:
@@ -2197,6 +2295,7 @@ def syllabus_expectations(markdown_path):
     day the assignment is handed out on, so they are collected rather than dropped.
     """
     meetings, doc = meeting_dates(markdown_path)
+    group_assignments = group_sets_module().syllabus_group_assignments(doc)
     info = doc.get("info") or {}
     homepage = addslash(str(info.get("course_homepage") or ""))
 
@@ -2227,6 +2326,7 @@ def syllabus_expectations(markdown_path):
             dlink = deliverable.get("dlink")
             expected[name] = {
                 "name": name,
+                "group": name in group_assignments,
                 "points": float(deliverable.get("points", 100)),
                 "day": day,
                 "url": (homepage + str(dlink)) if dlink and homepage else None,
@@ -2869,6 +2969,13 @@ def generate(canvas, markdown_path, modules=True, homepage=None):
     if not expected:
         die("no deliverables found in %s" % markdown_path)
     plan = deploy_module_plan(markdown_path, homepage) if modules else None
+    category_name = None
+    category_id = None
+    if any(want.get("group") for want in expected.values()):
+        groups = group_sets_module()
+        category_name = groups.group_set_name(getattr(canvas, "group_set", None))
+        category = groups.find_group_set(canvas.course, category_name)
+        category_id = category.id if category is not None else None
 
     lock = course_end_lock(info)
     module_days = {module_date(canvas._label(m)) for m in canvas.modules()}
@@ -2876,11 +2983,14 @@ def generate(canvas, markdown_path, modules=True, homepage=None):
 
     live = {}
     for assignment in canvas.assignments():
-        live[(assignment.name or "").strip()] = assignment
+        name = (assignment.name or "").strip()
+        if name in live and expected.get(name, {}).get("group"):
+            die("multiple Canvas assignments exactly match group deliverable %r" % name)
+        live[name] = assignment
 
     out, deferred = [], []
     counts = {"create": 0, "due": 0, "points": 0, "url": 0, "orphan": 0,
-              "nomodule": 0, "rubric": 0}
+              "nomodule": 0, "rubric": 0, "group": 0}
     created, moved = set(), set()   # assignment names this document creates or re-dates
 
     for name in sorted(expected):
@@ -2894,6 +3004,9 @@ def generate(canvas, markdown_path, modules=True, homepage=None):
             out.append("  - op: assignment.create")
             out.append("    name: %s" % yaml_quote(name))
             out.append("    points: %g" % want["points"])
+            if want.get("group"):
+                out.append("    group: true")
+                out.append("    group_set: %s" % yaml_quote(category_name))
             if want["day"]:
                 out.append("    due: %s" % want["day"].strftime("%Y-%m-%d"))
             if want.get("handout"):
@@ -2929,6 +3042,16 @@ def generate(canvas, markdown_path, modules=True, homepage=None):
         if want.get("rubricpath"):
             counts["rubric"] += 1
             deferred.append((name, want["rubricpath"], assignment))
+
+        if want.get("group") and (category_id is None or
+                                  getattr(assignment, "group_category_id", None) != category_id):
+            counts["group"] += 1
+            out.append("  - op: assignment.update")
+            out.append("    name: %s" % yaml_quote(name))
+            out.append("    id: %s" % assignment.id)
+            out.append("    group: true")
+            out.append("    group_set: %s" % yaml_quote(category_name))
+            out.append("")
 
         have_due = getattr(assignment, "due_at", None)
         if want_due and (have_due or "").replace(".000Z", "Z") != want_due:
@@ -2972,6 +3095,8 @@ def generate(canvas, markdown_path, modules=True, homepage=None):
     print("# course:     %s (%s)" % (canvas.course.id, getattr(canvas.course, "name", "?")))
     print("# drift:      %d to create, %d due date(s), %d points, %d link(s), %d unaccounted"
           % (counts["create"], counts["due"], counts["points"], counts["url"], len(orphans)))
+    if category_name is not None:
+        print("# groups:     %d existing assignment(s) need the requested group set" % counts["group"])
     if plan is not None:
         print("# modules:    %d to create, %d to update, %d unaccounted"
               % (mcounts["module_create"], mcounts["module_update"], mcounts["module_orphan"]))
@@ -3193,6 +3318,8 @@ def parse_args(argv):
                         "relative to the current directory)" % DEFAULT_SYLLABUS)
     p.add_argument("--api-url", default=DEFAULT_API_URL,
                    help="Canvas base URL (default: %s)" % DEFAULT_API_URL)
+    p.add_argument("--group-set", default=None,
+                   help="student group set name (default: $CANVAS_GROUP_SET or Project Groups)")
     p.add_argument("--apply", action="store_true",
                    help="actually write to Canvas (default is a dry run)")
     p.add_argument("--allow-delete-with-submissions", action="store_true",
@@ -3226,8 +3353,12 @@ def main(argv=None):
 
     if args.generate:
         canvas = connect(args)
-        return generate(canvas, args.markdown, modules=not args.no_modules,
-                        homepage=args.homepage)
+        canvas.group_set = args.group_set
+        try:
+            return generate(canvas, args.markdown, modules=not args.no_modules,
+                            homepage=args.homepage)
+        except ValueError as exc:
+            die(str(exc))
 
     if args.file:
         if not os.path.exists(args.file):
@@ -3277,6 +3408,7 @@ def main(argv=None):
         return 0
 
     canvas = connect(args)
+    canvas.group_set = args.group_set
     canvas.modules_enabled = not args.no_modules
     canvas.last_class_date = args.last_class_date
     print("Course %s: %s\n" % (canvas.course.id, getattr(canvas.course, "name", "?")))
@@ -3286,7 +3418,10 @@ def main(argv=None):
     # Resolve everything before writing anything.
     plan = []
     for change in changes:
-        lines, action = plan_operation(canvas, change)
+        try:
+            lines, action = plan_operation(canvas, change)
+        except ValueError as exc:
+            die("operation %d: %s" % (change["_index"], exc))
         plan.append((change, lines, action))
         print("%2d. %s" % (change["_index"], lines[0]))
         for line in lines[1:]:

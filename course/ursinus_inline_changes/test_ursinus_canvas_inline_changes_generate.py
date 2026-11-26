@@ -117,6 +117,11 @@ class FakeModule:
 
 
 class FakeAssignment(SimpleNamespace):
+    def edit(self, assignment):
+        self.edits.append(assignment.copy())
+        for key, value in assignment.items():
+            setattr(self, key, value)
+
     def get_submissions(self, **kwargs):
         return []
 
@@ -126,6 +131,23 @@ class FakeCourse:
 
     def __init__(self):
         self.modules, self.assignments = [], []
+        self.categories = []
+        self.category_reads = 0
+
+    def get_group_categories(self):
+        self.category_reads += 1
+        return iter(self.categories)
+
+    def create_group_category(self, name):
+        category = SimpleNamespace(id=next(_ids), name=name)
+        self.categories.append(category)
+        return category
+
+    def get_assignments(self):
+        return iter(self.assignments)
+
+    def get_assignment(self, assignment_id):
+        return next(a for a in self.assignments if a.id == assignment_id)
 
     def update(self, **kwargs):
         pass
@@ -140,7 +162,10 @@ class FakeCourse:
                                     due_at=inputdict.get("due_at"),
                                     lock_at=inputdict.get("lock_at"),
                                     points_possible=inputdict.get("points_possible"),
-                                    description=inputdict.get("description"))
+                                    description=inputdict.get("description"),
+                                    group_category_id=inputdict.get("group_category_id"),
+                                    has_submitted_submissions=False,
+                                    edits=[])
         self.assignments.append(assignment)
         return assignment
 
@@ -172,13 +197,13 @@ class GenerateModulesTests(unittest.TestCase):
 
         self.deploy(SYLLABUS)
 
-    def deploy(self, text):
+    def deploy(self, text, **kwargs):
         """The shell a full deploy writes from this syllabus."""
         with open(self.syllabus, "w", encoding="utf-8") as fh:
             fh.write(text)
         self.course = FakeCourse()
         with contextlib.redirect_stdout(io.StringIO()):
-            deploy.process_markdown(self.syllabus, None, self.course, self.course.id, HOMEPAGE)
+            deploy.process_markdown(self.syllabus, None, self.course, self.course.id, HOMEPAGE, **kwargs)
 
     # -- helpers -----------------------------------------------------------
 
@@ -344,6 +369,169 @@ class GenerateModulesTests(unittest.TestCase):
                          (3, True, HOMEPAGE + "/readings/ch2"))
         self.assertEqual(edits, [{"external_url": "https://example.org/ch1"}])
 
+
+    @staticmethod
+    def group_syllabus(flag="true"):
+        return SYLLABUS.replace('        points: 50', '        points: 50\n        group: ' + flag)
+
+    def set_group_syllabus(self):
+        with open(self.syllabus, "w", encoding="utf-8") as fh:
+            fh.write(self.group_syllabus())
+
+    def test_deploy_group_assignment_uses_category_and_false_does_not_read_categories(self):
+        self.deploy(self.group_syllabus("false"))
+        self.assertEqual(self.course.category_reads, 0)
+        self.deploy(self.group_syllabus(), group_set="Studio teams")
+        self.assertEqual([category.name for category in self.course.categories], ["Studio teams"])
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        lab = next(a for a in self.course.assignments if a.name == LAB)
+        self.assertEqual(essay.group_category_id, self.course.categories[0].id)
+        self.assertIsNone(lab.group_category_id)
+
+    def test_deploy_skipping_assignments_does_not_touch_group_sets(self):
+        with patch.object(deploy, "skipassignments", True):
+            self.deploy(self.group_syllabus())
+        self.assertEqual(self.course.category_reads, 0)
+        self.assertFalse(self.course.categories)
+        self.assertFalse(self.course.assignments)
+
+    def test_group_syllabus_rejects_strings_before_writes(self):
+        with self.assertRaisesRegex(ValueError, "YAML boolean"):
+            self.deploy(self.group_syllabus('"false"'))
+        self.assertFalse(self.course.modules)
+        self.assertFalse(self.course.categories)
+
+    def test_generated_group_update_creates_set_only_on_apply_and_settles(self):
+        self.set_group_syllabus()
+        text, ops = self.generate(modules=False)
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        self.assertEqual(ops, [{"op": "assignment.update", "name": ESSAY, "id": essay.id,
+                                "group": True, "group_set": "Project Groups"}])
+        canvas = self.canvas()
+        canvas.modules_enabled = False
+        lines, apply = changes.plan_operation(canvas, changes.parse_document(text)[0])
+        self.assertIn("create group set on apply", "\n".join(lines))
+        self.assertFalse(self.course.categories)
+        self.assertFalse(essay.edits)
+        with patch.object(changes, "sleep_for_rate_limit"):
+            apply()
+        self.assertEqual(essay.edits, [{"group_category_id": self.course.categories[0].id}])
+        self.assertEqual(self.generate(modules=False)[1], [])
+
+    def test_generated_group_creation_is_carried_and_read_back(self):
+        self.set_group_syllabus()
+        self.course.assignments = [a for a in self.course.assignments if a.name != ESSAY]
+        text, ops = self.generate(modules=False)
+        self.assertEqual(ops[0]["op"], "assignment.create")
+        self.assertIs(ops[0]["group"], True)
+        canvas = self.canvas()
+        canvas.modules_enabled = False
+        _, apply = changes.plan_operation(canvas, changes.parse_document(text)[0])
+        with patch.object(changes, "sleep_for_rate_limit"):
+            apply()
+        created = next(a for a in self.course.assignments if a.name == ESSAY)
+        self.assertEqual(created.group_category_id, self.course.categories[0].id)
+
+    def test_group_update_refuses_submissions_before_any_category_write(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        essay.has_submitted_submissions = True
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        with self.assertRaisesRegex(ValueError, "has submissions"):
+            changes.plan_operation(self.canvas(), change)
+        self.assertFalse(essay.edits)
+        self.assertFalse(self.course.categories)
+
+    def test_group_update_refuses_an_existing_other_set_before_writing(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        essay.group_category_id = 404
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        with self.assertRaisesRegex(ValueError, "a different group set"):
+            changes.plan_operation(self.canvas(), change)
+        self.assertFalse(essay.edits)
+        self.assertFalse(self.course.categories)
+
+    def test_group_update_refuses_a_planned_name_or_category_change(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        category = self.course.create_group_category("Project Groups")
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        _, apply = changes.plan_operation(self.canvas(), change)
+        changed = copy.copy(essay)
+        changed.name = "Renamed"
+        with patch.object(self.course, "get_assignment", return_value=changed):
+            with self.assertRaisesRegex(ValueError, "assignment changed"):
+                apply()
+        self.course.categories = [SimpleNamespace(id=category.id + 1, name=category.name)]
+        with self.assertRaisesRegex(ValueError, "group set changed"):
+            apply()
+        self.assertFalse(essay.edits)
+
+    def test_group_update_requires_readback(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        _, apply = changes.plan_operation(self.canvas(), change)
+        with patch.object(changes, "sleep_for_rate_limit"), patch.object(essay, "edit"):
+            with self.assertRaisesRegex(ValueError, "did not verify"):
+                apply()
+
+    def test_ambiguous_category_refuses_before_deployment_writes(self):
+        course = FakeCourse()
+        course.create_group_category("Project Groups")
+        course.create_group_category("Project Groups")
+        self.set_group_syllabus()
+        with self.assertRaisesRegex(ValueError, "multiple Canvas group sets"):
+            deploy.process_markdown(self.syllabus, None, course, course.id, HOMEPAGE)
+        self.assertFalse(course.modules)
+        self.assertFalse(course.assignments)
+
+    def test_inline_false_leaves_categories_alone_and_string_still_means_gradebook_group(self):
+        canvas = self.canvas()
+        canvas.modules_enabled = False
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = {"op": "assignment.update", "id": essay.id, "group": False, "_index": 1}
+        changes.plan_operation(canvas, change)[1]()
+        self.assertEqual(self.course.category_reads, 0)
+        self.assertFalse(essay.edits)
+        with patch.object(canvas, "find_group", return_value=SimpleNamespace(id=12, name="Labs")):
+            payload, _, _ = changes.assignment_payload(canvas, {"group": "Labs"})
+        self.assertEqual(payload, {"assignment_group_id": 12})
+
+    def test_inline_group_submissions_and_gradebook_group_share_one_operation(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = changes.parse_document(
+            "- op: assignment.update\n  id: %s\n  group: true\n  assignment_group: Projects\n" % essay.id
+        )[0]
+        canvas = self.canvas()
+        canvas.modules_enabled = False
+        with patch.object(canvas, "find_group", return_value=SimpleNamespace(id=12, name="Projects")):
+            _, apply = changes.plan_operation(canvas, change)
+        with patch.object(changes, "sleep_for_rate_limit"):
+            apply()
+        self.assertEqual(essay.edits, [{
+            "assignment_group_id": 12, "group_category_id": self.course.categories[0].id,
+        }])
+
+    def test_inline_duplicate_group_fields_are_refused(self):
+        with self.assertRaises(SystemExit):
+            changes.parse_document(
+                "- op: assignment.create\n  name: Example\n  group: Projects\n  group: true\n"
+            )
+
+    def test_inline_apply_refuses_externally_created_group_set(self):
+        essay = next(a for a in self.course.assignments if a.name == ESSAY)
+        change = {"op": "assignment.update", "id": essay.id, "group": True, "_index": 1}
+        _, apply = changes.plan_operation(self.canvas(), change)
+        self.course.create_group_category("Project Groups")
+        with patch.object(changes, "sleep_for_rate_limit"):
+            with self.assertRaisesRegex(ValueError, "group set appeared since planning"):
+                apply()
+        self.assertFalse(essay.edits)
+
+    def test_inline_apply_reuses_group_set_created_in_same_run(self):
+        canvas = self.canvas()
+        plan = ("Project Groups", None)
+        first = changes.apply_assignment_group_set(canvas, plan)
+        self.assertEqual(changes.apply_assignment_group_set(canvas, plan), first)
+        self.assertEqual(len(self.course.categories), 1)
 
     # -- review findings (one test each) --------------------------------------
 
